@@ -4,14 +4,14 @@ import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.interaction.InteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.ReadOnlyComposable
@@ -21,9 +21,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.GraphicsLayerScope
+import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.MeasureResult
+import androidx.compose.ui.layout.MeasureScope
+import androidx.compose.ui.node.CompositionLocalConsumerModifierNode
+import androidx.compose.ui.node.LayoutModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.currentValueOf
+import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Constraints
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /**
  * `true` when the user turned animations off (开发者选项 / 无障碍「移除动画」, i.e.
@@ -50,17 +60,27 @@ fun rememberReduceMotion(): Boolean {
     return reduce
 }
 
-/** Shared spring tunings so the whole app moves with one personality. */
+/**
+ * Shared spring tunings so the whole app moves with one personality.
+ *
+ * Rule of thumb: overshoot only on small things (icons, buttons, swatches). Anything that moves a
+ * large area of the screen (tab content, cards expanding, list rows) settles without bounce, so a
+ * spring overshoot never forces extra layout passes over big subtrees.
+ */
 object Springs {
-    /** Playful overshoot: presses, selections, swatches, the swap button. */
+    /** Playful overshoot for small elements only: presses, selections, swatches, the swap button. */
     fun <T> bouncy(stiffness: Float = Spring.StiffnessMedium): FiniteAnimationSpec<T> =
-        spring(dampingRatio = 0.5f, stiffness = stiffness)
+        spring(dampingRatio = 0.55f, stiffness = stiffness)
 
-    /** A little life without wobble: tab content, list placement, expanding sections. */
+    /** Screen-level transitions (tab content): quick, with a barely visible settle. */
+    fun <T> transition(stiffness: Float = Spring.StiffnessMediumLow): FiniteAnimationSpec<T> =
+        spring(dampingRatio = 0.85f, stiffness = stiffness)
+
+    /** Layout changes (expand / collapse, list placement): fast and critically damped, no wobble. */
     fun <T> gentle(stiffness: Float = Spring.StiffnessMediumLow): FiniteAnimationSpec<T> =
-        spring(dampingRatio = 0.8f, stiffness = stiffness)
+        spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = stiffness)
 
-    /** No overshoot: sizes that change continuously (streaming text) and colors. */
+    /** No overshoot: fades, sizes that change continuously, colors. */
     fun <T> smooth(stiffness: Float = Spring.StiffnessMediumLow): FiniteAnimationSpec<T> =
         spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = stiffness)
 }
@@ -80,18 +100,90 @@ fun <T> motionSpec(spec: AnimationSpec<T>): AnimationSpec<T> =
 /**
  * Squishes the element while pressed and springs back with a small overshoot on release.
  * Pass the same [interactionSource] to the button/clickable so presses are observed.
+ *
+ * Implemented as a [Modifier.Node]: presses are collected in the node's own coroutine and the
+ * scale is read only inside the graphics-layer block, so a press animates in the draw phase
+ * without recomposing (or even re-measuring) anything.
  */
 fun Modifier.bounceClick(interactionSource: InteractionSource, pressedScale: Float = 0.9f): Modifier =
-    composed {
-        if (LocalReduceMotion.current) return@composed this
-        val pressed by interactionSource.collectIsPressedAsState()
-        val scale by animateFloatAsState(
-            targetValue = if (pressed) pressedScale else 1f,
-            animationSpec = spring(dampingRatio = 0.5f, stiffness = Spring.StiffnessMedium),
-            label = "bounceClick",
-        )
-        graphicsLayer {
-            scaleX = scale
-            scaleY = scale
+    this then BounceClickElement(interactionSource, pressedScale)
+
+private data class BounceClickElement(
+    val interactionSource: InteractionSource,
+    val pressedScale: Float,
+) : ModifierNodeElement<BounceClickNode>() {
+    override fun create() = BounceClickNode(interactionSource, pressedScale)
+
+    override fun update(node: BounceClickNode) = node.update(interactionSource, pressedScale)
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "bounceClick"
+        properties["pressedScale"] = pressedScale
+    }
+}
+
+private class BounceClickNode(
+    private var interactionSource: InteractionSource,
+    private var pressedScale: Float,
+) : Modifier.Node(), LayoutModifierNode, CompositionLocalConsumerModifierNode {
+
+    private val scale = Animatable(1f)
+    private var collectJob: Job? = null
+    private var animJob: Job? = null
+
+    // Allocated once; reading scale.value here invalidates only this layer, never composition.
+    private val layerBlock: GraphicsLayerScope.() -> Unit = {
+        val s = scale.value
+        scaleX = s
+        scaleY = s
+    }
+
+    override fun onAttach() = collectPresses()
+
+    override fun onDetach() {
+        collectJob = null
+        animJob = null
+    }
+
+    fun update(source: InteractionSource, pressed: Float) {
+        pressedScale = pressed
+        if (source != interactionSource) {
+            interactionSource = source
+            collectJob?.cancel()
+            if (isAttached) collectPresses()
         }
     }
+
+    private fun collectPresses() {
+        collectJob = coroutineScope.launch {
+            val presses = ArrayList<PressInteraction.Press>(1)
+            interactionSource.interactions.collect { interaction ->
+                when (interaction) {
+                    is PressInteraction.Press -> presses += interaction
+                    is PressInteraction.Release -> presses -= interaction.press
+                    is PressInteraction.Cancel -> presses -= interaction.press
+                    else -> return@collect
+                }
+                animateTo(if (presses.isNotEmpty()) pressedScale else 1f)
+            }
+        }
+    }
+
+    private fun animateTo(target: Float) {
+        animJob?.cancel()
+        animJob = coroutineScope.launch {
+            if (currentValueOf(LocalReduceMotion)) {
+                scale.snapTo(1f)
+            } else {
+                scale.animateTo(target, spring(dampingRatio = 0.5f, stiffness = Spring.StiffnessMedium))
+            }
+        }
+    }
+
+    override fun MeasureScope.measure(measurable: Measurable, constraints: Constraints): MeasureResult {
+        val placeable = measurable.measure(constraints)
+        return layout(placeable.width, placeable.height) {
+            placeable.placeWithLayer(0, 0, layerBlock = layerBlock)
+        }
+    }
+}

@@ -9,7 +9,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,6 +36,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -106,12 +107,14 @@ private fun Swatch(seed: ThemeSeed, dark: Boolean, selected: Boolean, onClick: (
     val tertiary = Color(scheme.tertiaryContainer)
     val name = stringResource(seed.labelRes())
     val src = remember { MutableInteractionSource() }
-    val scale by animateFloatAsState(
+    // Both animated values are read only in graphicsLayer / drawWithContent (draw phase), so
+    // selecting a swatch never recomposes it per frame.
+    val scale = animateFloatAsState(
         targetValue = if (selected) 1f else 0.84f,
         animationSpec = motion(Springs.bouncy(stiffness = 500f)),
         label = "swatchScale",
     )
-    val ring by animateDpAsState(
+    val ring = animateDpAsState(
         targetValue = if (selected) 2.dp else 0.dp,
         animationSpec = motion(Springs.smooth()),
         label = "swatchRing",
@@ -123,11 +126,15 @@ private fun Swatch(seed: ThemeSeed, dark: Boolean, selected: Boolean, onClick: (
             .size(48.dp)
             .bounceClick(src, pressedScale = 0.8f)
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                scaleX = scale.value
+                scaleY = scale.value
             }
             .clip(CircleShape)
-            .border(ring, primary, CircleShape)
+            .drawWithContent {
+                drawContent()
+                val w = ring.value.toPx()
+                if (w > 0f) drawCircle(primary, radius = size.minDimension / 2f - w / 2f, style = Stroke(w))
+            }
             .selectable(selected = selected, interactionSource = src, indication = null, role = Role.RadioButton, onClick = onClick)
             .semantics { contentDescription = name },
     ) {

@@ -4,7 +4,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VisibilityThreshold
@@ -37,7 +36,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +48,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nekohome.translate.R
 import com.nekohome.translate.data.AppSettings
 import com.nekohome.translate.ui.models.ModelsScreen
@@ -72,7 +71,7 @@ enum class AppTab(@StringRes val label: Int, val selectedIcon: ImageVector, val 
  */
 @Composable
 fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSettings) {
-    val state by vm.state.collectAsState()
+    val state by vm.state.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableStateOf(AppTab.TRANSLATE) }
     val tabStates = rememberSaveableStateHolder()
     val snackbar = remember { SnackbarHostState() }
@@ -123,14 +122,22 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
                 if (reduceMotion) {
                     EnterTransition.None togetherWith ExitTransition.None
                 } else {
-                    // Slide a fraction of the width toward the new tab's side of the bar.
+                    // Slide a fraction of the width toward the new tab's side of the bar. Whole-screen
+                    // motion: stiff and almost critically damped (no visible overshoot), and the
+                    // slide/fade run in the graphics layer only.
                     val dir = if (targetState.ordinal > initialState.ordinal) 1 else -1
-                    val slide = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMediumLow, visibilityThreshold = IntOffset.VisibilityThreshold)
-                    (slideInHorizontally(slide) { w -> dir * w / 6 } + fadeIn(spring(stiffness = Spring.StiffnessMedium)))
+                    val slide = spring(
+                        dampingRatio = 0.85f,
+                        stiffness = Spring.StiffnessMediumLow,
+                        visibilityThreshold = IntOffset.VisibilityThreshold,
+                    )
+                    (slideInHorizontally(slide) { w -> dir * w / 8 } + fadeIn(spring(stiffness = Spring.StiffnessMedium)))
                         .togetherWith(
-                            slideOutHorizontally(slide) { w -> -dir * w / 6 } + fadeOut(spring(stiffness = Spring.StiffnessHigh)),
+                            slideOutHorizontally(slide) { w -> -dir * w / 8 } + fadeOut(spring(stiffness = Spring.StiffnessHigh)),
                         )
-                        .using(SizeTransform(clip = false))
+                        // Every tab fills the same area: skip size animation (and its extra
+                        // measure passes) entirely.
+                        .using(null)
                 }
             },
             label = "tab",

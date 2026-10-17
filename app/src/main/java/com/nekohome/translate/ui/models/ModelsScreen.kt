@@ -59,7 +59,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -104,19 +104,32 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            state.importProgress?.let { p -> item(key = "import") { Box(springItem()) { ImportProgress(p) } } }
+            state.importProgress?.let { p ->
+                item(key = "import", contentType = "import") { Box(springItem()) { ImportProgress(p) } }
+            }
 
             if (state.models.isEmpty()) {
-                item(key = "empty") {
+                item(key = "empty", contentType = "empty") {
                     Box(springItem()) { EmptyModels(onImport = launchImport, enabled = state.importProgress == null) }
                 }
             }
 
-            items(state.models, key = { it.file.absolutePath }) { model ->
+            items(state.models, key = { it.file.absolutePath }, contentType = { "model" }) { model ->
+                // Narrow, equality-comparable inputs: dragging a slider for one model changes
+                // `state` every frame, but cards whose own values didn't change are skipped.
+                val path = model.file.absolutePath
+                val params = state.paramsFor(model)
                 ModelCard(
                     modifier = springItem(),
                     model = model,
-                    state = state,
+                    isLoaded = state.isLoaded(model),
+                    isSelected = state.selectedPath == path,
+                    isLoadingThis = state.loadingPath == path,
+                    busy = state.isLoading || state.isTranslating,
+                    isTranslating = state.isTranslating,
+                    manualProfile = params.profileId != null,
+                    profileName = state.profileFor(model).displayName,
+                    loadInfo = if (state.isLoaded(model)) state.loadInfo else "",
                     onSelect = { vm.selectModel(model) },
                     onLoad = { vm.loadModel(model) },
                     onUnload = vm::unloadModel,
@@ -126,7 +139,7 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
 
             val selected = state.selectedModel
             if (selected != null) {
-                item(key = "params-header") {
+                item(key = "params-header", contentType = "header") {
                     Text(
                         stringResource(R.string.models_params_title, selected.file.nameWithoutExtension),
                         style = MaterialTheme.typography.titleMedium,
@@ -137,9 +150,9 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
                             .padding(top = 12.dp),
                     )
                 }
-                item(key = "params") { Box(springItem()) { ParamsPanel(model = selected, state = state, vm = vm) } }
+                item(key = "params", contentType = "params") { Box(springItem()) { ParamsPanel(model = selected, state = state, vm = vm) } }
             } else if (state.models.isNotEmpty()) {
-                item(key = "params-hint") {
+                item(key = "params-hint", contentType = "hint") {
                     Text(
                         stringResource(R.string.models_params_hint),
                         style = MaterialTheme.typography.bodySmall,
@@ -150,13 +163,13 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
             }
 
             if (state.systemInfo.isNotEmpty()) {
-                item(key = "runtime") {
+                item(key = "runtime", contentType = "runtime") {
                     Column(
                         Modifier
                             .then(springItem())
                             .animateContentSize(motion(Springs.gentle())),
                     ) {
-                        val chevron by animateFloatAsState(
+                        val chevron = animateFloatAsState(
                             targetValue = if (showRuntimeInfo) 180f else 0f,
                             animationSpec = motion(Springs.bouncy()),
                             label = "runtimeChevron",
@@ -168,7 +181,7 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
                                 contentDescription = null,
                                 modifier = Modifier
                                     .size(ButtonDefaults.IconSize)
-                                    .rotate(chevron),
+                                    .graphicsLayer { rotationZ = chevron.value },
                             )
                         }
                         if (showRuntimeInfo) {
@@ -206,22 +219,27 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
     }
 }
 
-/** Spring-y insert / remove / reorder for every row of the models list. */
+/**
+ * Insert / remove / reorder animation for every row of the models list. Rows are large, so
+ * placement is stiff and critically damped (no overshoot that would keep the list re-placing).
+ */
 @Composable
 private fun LazyItemScope.springItem(): Modifier =
     if (LocalReduceMotion.current) {
         Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
     } else {
         Modifier.animateItem(
-            fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
-            placementSpec = spring(
-                dampingRatio = 0.7f,
-                stiffness = Spring.StiffnessMediumLow,
-                visibilityThreshold = IntOffset.VisibilityThreshold,
-            ),
+            fadeInSpec = spring(stiffness = Spring.StiffnessMedium),
+            placementSpec = ItemPlacementSpec,
             fadeOutSpec = spring(stiffness = Spring.StiffnessMedium),
         )
     }
+
+private val ItemPlacementSpec = spring(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = Spring.StiffnessMedium,
+    visibilityThreshold = IntOffset.VisibilityThreshold,
+)
 
 @Composable
 private fun ImportProgress(p: Float) {
@@ -272,19 +290,19 @@ private fun EmptyModels(onImport: () -> Unit, enabled: Boolean) {
 private fun ModelCard(
     modifier: Modifier,
     model: LocalModel,
-    state: MainUiState,
+    isLoaded: Boolean,
+    isSelected: Boolean,
+    isLoadingThis: Boolean,
+    busy: Boolean,
+    isTranslating: Boolean,
+    manualProfile: Boolean,
+    profileName: String,
+    loadInfo: String,
     onSelect: () -> Unit,
     onLoad: () -> Unit,
     onUnload: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val isLoaded = state.isLoaded(model)
-    val isSelected = state.selectedPath == model.file.absolutePath
-    val isLoadingThis = state.loadingPath == model.file.absolutePath
-    val busy = state.isLoading || state.isTranslating
-    val params = state.paramsFor(model)
-    val profile = state.profileFor(model)
-
     OutlinedCard(
         onClick = onSelect,
         modifier = modifier.fillMaxWidth(),
@@ -326,17 +344,17 @@ private fun ModelCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                if (params.profileId == null) {
-                    stringResource(R.string.models_profile_auto_line, profile.displayName)
+                if (!manualProfile) {
+                    stringResource(R.string.models_profile_auto_line, profileName)
                 } else {
-                    stringResource(R.string.models_profile_manual_line, profile.displayName)
+                    stringResource(R.string.models_profile_manual_line, profileName)
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (isLoaded && state.loadInfo.isNotEmpty()) {
+            if (isLoaded && loadInfo.isNotEmpty()) {
                 Text(
-                    state.loadInfo,
+                    loadInfo,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(top = 2.dp),
@@ -355,7 +373,7 @@ private fun ModelCard(
                         Spacer(Modifier.width(ButtonDefaults.IconSpacing))
                         Text(stringResource(R.string.models_loading))
                     }
-                    isLoaded -> OutlinedButton(onClick = onUnload, enabled = !state.isTranslating, interactionSource = src, modifier = bounce) {
+                    isLoaded -> OutlinedButton(onClick = onUnload, enabled = !isTranslating, interactionSource = src, modifier = bounce) {
                         Text(stringResource(R.string.models_unload))
                     }
                     else -> Button(onClick = onLoad, enabled = !busy, interactionSource = src, modifier = bounce) {

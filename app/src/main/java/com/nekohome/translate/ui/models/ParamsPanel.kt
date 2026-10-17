@@ -61,7 +61,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -264,7 +264,8 @@ private fun ParamSection(
     content: @Composable () -> Unit,
 ) {
     var expanded by rememberSaveable(saveKey) { mutableStateOf(true) }
-    val chevron by animateFloatAsState(
+    // Read only in the graphics layer below, so the spin doesn't recompose the section.
+    val chevron = animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = motion(Springs.bouncy()),
         label = "chevron",
@@ -306,7 +307,7 @@ private fun ParamSection(
                         if (expanded) R.string.models_section_collapse else R.string.models_section_expand,
                     ),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.rotate(chevron),
+                    modifier = Modifier.graphicsLayer { rotationZ = chevron.value },
                 )
             }
             if (expanded) {
