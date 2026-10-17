@@ -1,0 +1,61 @@
+plugins {
+    alias(libs.plugins.android.library)
+}
+
+val cpuAllVariants = (findProperty("lt.cpuAllVariants") as String?)?.toBoolean() ?: true
+val cpuArch = (findProperty("lt.cpuArch") as String?) ?: "armv8.6-a+dotprod+i8mm+fp16"
+val kleidiai = (findProperty("lt.kleidiai") as String?)?.toBoolean() ?: true
+
+android {
+    namespace = "com.nekohome.translate.llama"
+    compileSdk = 37
+    ndkVersion = "29.0.14206865"
+
+    defaultConfig {
+        minSdk = 29
+        consumerProguardFiles("consumer-rules.pro")
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+        externalNativeBuild {
+            cmake {
+                // Native code is always built optimized, even for the debug APK:
+                // a -O0 llama.cpp is 10x+ slower and useless for testing.
+                arguments += "-DCMAKE_BUILD_TYPE=Release"
+                arguments += "-DANDROID_STL=c++_shared"
+                arguments += "-DBUILD_SHARED_LIBS=ON"
+                arguments += "-DLLAMA_BUILD_COMMON=OFF"
+                arguments += "-DLLAMA_BUILD_TESTS=OFF"
+                arguments += "-DLLAMA_BUILD_TOOLS=OFF"
+                arguments += "-DLLAMA_BUILD_EXAMPLES=OFF"
+                arguments += "-DLLAMA_BUILD_SERVER=OFF"
+                arguments += "-DLLAMA_BUILD_APP=OFF"
+                arguments += "-DLLAMA_OPENSSL=OFF"
+                arguments += "-DGGML_NATIVE=OFF"
+                arguments += "-DGGML_LLAMAFILE=OFF"
+                arguments += "-DGGML_VULKAN=OFF"
+                arguments += "-DGGML_OPENCL=OFF"
+                arguments += "-DLT_CPU_ALL_VARIANTS=${if (cpuAllVariants) "ON" else "OFF"}"
+                arguments += "-DLT_CPU_ARCH=$cpuArch"
+                arguments += "-DLT_KLEIDIAI=${if (kleidiai) "ON" else "OFF"}"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path("src/main/cpp/CMakeLists.txt")
+            version = "3.31.6"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    testImplementation(libs.junit)
+}

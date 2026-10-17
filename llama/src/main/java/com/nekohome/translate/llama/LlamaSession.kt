@@ -1,0 +1,198 @@
+package com.nekohome.translate.llama
+
+import java.io.Closeable
+
+data class LoadParams(
+    val nCtx: Int = 4096,
+    val nThreads: Int = defaultThreads(),
+    val nBatch: Int = 512,
+    val useMmap: Boolean = true,
+) {
+    companion object {
+        /** Leave a couple of cores for the UI; Snapdragon 8 Elite (Gen 5) has 8 big cores. */
+        fun defaultThreads(): Int =
+            (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
+    }
+}
+
+data class SamplingParams(
+    /** <= 0 means greedy decoding. */
+    val temperature: Float = 0f,
+    /** 1.0 disables top-p. */
+    val topP: Float = 1f,
+    /** 0 disables top-k. */
+    val topK: Int = 0,
+    val minP: Float = 0f,
+    /** 1.0 disables the repetition penalty. */
+    val repeatPenalty: Float = 1f,
+    val repeatLastN: Int = 64,
+    val maxTokens: Int = 1024,
+    /** < 0 picks a random seed. */
+    val seed: Int = -1,
+)
+
+enum class StopReason { EOG, MAX_TOKENS, CONTEXT_FULL, CANCELLED, ERROR }
+
+data class GenerationStats(
+    val status: Int,
+    val promptTokens: Int,
+    val promptMs: Double,
+    val generatedTokens: Int,
+    val generationMs: Double,
+    val stopReason: StopReason,
+) {
+    val promptTokensPerSecond: Double
+        get() = if (promptMs > 0) promptTokens * 1000.0 / promptMs else 0.0
+    val tokensPerSecond: Double
+        get() = if (generationMs > 0) generatedTokens * 1000.0 / generationMs else 0.0
+    val ok: Boolean get() = status == 0 || status == 1
+
+    fun errorMessage(): String? = when (status) {
+        0, 1 -> null
+        -2 -> "Tokenization failed"
+        -3 -> "Prompt is longer than the context window ($promptTokens tokens)"
+        -4 -> "llama_decode failed"
+        else -> "Generation failed (status $status)"
+    }
+}
+
+data class ModelInfo(
+    val architecture: String,
+    val name: String,
+    val fileType: String,
+    val description: String,
+    val parameterCount: Long,
+    val sizeBytes: Long,
+    val nCtxTrain: Int,
+    val nCtx: Int,
+    val chatTemplate: String?,
+)
+
+data class ChatMessage(val role: String, val content: String)
+
+/**
+ * One loaded model + context. Not thread-safe: use it from a single thread
+ * (except [cancel], which may be called from anywhere).
+ */
+class LlamaSession private constructor(handle: Long) : Closeable {
+
+    @Volatile
+    private var handle: Long = handle
+
+    companion object {
+        /** Loads from a file path. `/proc/self/fd/N` paths are accepted too. */
+        fun load(path: String, params: LoadParams = LoadParams()): LlamaSession {
+            val h = LlamaNative.nativeLoad(
+                path.toByteArray(Charsets.UTF_8), -1,
+                params.nCtx, params.nThreads, params.nBatch, params.useMmap,
+            )
+            if (h == 0L) throw IllegalStateException("Failed to load model: $path")
+            return LlamaSession(h)
+        }
+
+        /** Loads from an open file descriptor (e.g. ParcelFileDescriptor.fd). The fd stays owned by the caller. */
+        fun loadFromFd(fd: Int, params: LoadParams = LoadParams()): LlamaSession {
+            val h = LlamaNative.nativeLoad(
+                null, fd, params.nCtx, params.nThreads, params.nBatch, params.useMmap,
+            )
+            if (h == 0L) throw IllegalStateException("Failed to load model from fd $fd")
+            return LlamaSession(h)
+        }
+    }
+
+    val isOpen: Boolean get() = handle != 0L
+
+    private fun requireHandle(): Long {
+        check(handle != 0L) { "Session is closed" }
+        return handle
+    }
+
+    fun meta(key: String): String? =
+        LlamaNative.nativeMeta(requireHandle(), key.toByteArray(Charsets.UTF_8))
+            ?.toString(Charsets.UTF_8)
+
+    fun modelInfo(): ModelInfo {
+        val packed = LlamaNative.nativeModelInfo(requireHandle())
+            ?: throw IllegalStateException("No model info")
+        val parts = packed.toString(Charsets.UTF_8).split('\u0000')
+        val map = HashMap<String, String>()
+        var i = 0
+        while (i + 1 < parts.size) {
+            map[parts[i]] = parts[i + 1]
+            i += 2
+        }
+        return ModelInfo(
+            architecture = map["general.architecture"].orEmpty(),
+            name = map["general.name"].orEmpty(),
+            fileType = map["ftype_name"].orEmpty(),
+            description = map["desc"].orEmpty(),
+            parameterCount = map["n_params"]?.toLongOrNull() ?: 0L,
+            sizeBytes = map["size_bytes"]?.toLongOrNull() ?: 0L,
+            nCtxTrain = map["n_ctx_train"]?.toIntOrNull() ?: 0,
+            nCtx = map["n_ctx"]?.toIntOrNull() ?: 0,
+            chatTemplate = map["chat_template"]?.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    /**
+     * Formats [messages] with llama_chat_apply_template. Uses the GGUF's embedded template when
+     * [template] is null. Returns null if llama.cpp does not recognise the template (it does not run
+     * Jinja; it matches known template families).
+     */
+    fun applyChatTemplate(
+        messages: List<ChatMessage>,
+        addAssistant: Boolean = true,
+        template: String? = null,
+    ): String? = LlamaNative.nativeApplyChatTemplate(
+        requireHandle(),
+        template?.toByteArray(Charsets.UTF_8),
+        messages.map { it.role.toByteArray(Charsets.UTF_8) }.toTypedArray(),
+        messages.map { it.content.toByteArray(Charsets.UTF_8) }.toTypedArray(),
+        addAssistant,
+    )?.toString(Charsets.UTF_8)
+
+    /**
+     * Generates a completion for an already formatted [prompt]. Blocks until done; [onToken] is
+     * invoked on the calling thread for each decoded UTF-8 chunk. Return false from it to stop.
+     */
+    fun generate(
+        prompt: String,
+        sampling: SamplingParams,
+        onToken: (String) -> Boolean,
+    ): GenerationStats {
+        val r = LlamaNative.nativeGenerate(
+            requireHandle(),
+            prompt.toByteArray(Charsets.UTF_8),
+            sampling.maxTokens,
+            sampling.temperature,
+            sampling.topP,
+            sampling.topK,
+            sampling.minP,
+            sampling.repeatPenalty,
+            sampling.repeatLastN,
+            sampling.seed,
+        ) { bytes -> onToken(bytes.toString(Charsets.UTF_8)) }
+        return GenerationStats(
+            status = r[0].toInt(),
+            promptTokens = r[1].toInt(),
+            promptMs = r[2],
+            generatedTokens = r[3].toInt(),
+            generationMs = r[4],
+            stopReason = StopReason.entries.getOrElse(r[5].toInt()) { StopReason.ERROR },
+        )
+    }
+
+    /** Thread-safe: requests the running [generate] (or prompt processing) to stop. */
+    fun cancel() {
+        val h = handle
+        if (h != 0L) LlamaNative.nativeCancel(h)
+    }
+
+    override fun close() {
+        val h = handle
+        if (h != 0L) {
+            handle = 0L
+            LlamaNative.nativeFree(h)
+        }
+    }
+}
