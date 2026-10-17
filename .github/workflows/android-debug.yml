@@ -1,4 +1,4 @@
-name: Android debug APK
+name: Android APKs (debug + release)
 
 on:
   push:
@@ -48,19 +48,38 @@ jobs:
       - name: Unit tests (JVM)
         run: ./gradlew --no-daemon :llama:testDebugUnitTest :app:testDebugUnitTest
 
-      - name: Build debug APK
-        run: ./gradlew --no-daemon :app:assembleDebug
+      # Release = R8-minified + baseline profiles (much smoother Compose UI). It is signed with the
+      # debug keystore Gradle generates on the runner, so it installs directly but is NOT a
+      # publishable build. Native code is -O3 (CMAKE_BUILD_TYPE=Release) in both variants.
+      - name: Build debug + release APKs
+        run: ./gradlew --no-daemon :app:assembleDebug :app:assembleRelease
 
-      - name: Upload APK
+      - name: Upload release APK (install this one)
+        uses: actions/upload-artifact@v4
+        with:
+          name: NekoTranslate-release-${{ github.sha }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: NekoTranslate-debug-${{ github.sha }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
+      - name: Upload R8 mapping
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NekoTranslate-release-mapping-${{ github.sha }}
+          path: app/build/outputs/mapping/release/
+          if-no-files-found: ignore
+
       - name: List native libraries in APK
         if: always()
         run: |
-          for apk in app/build/outputs/apk/debug/*.apk; do
-            unzip -l "$apk" | grep '\.so$' || true
+          for apk in app/build/outputs/apk/*/*.apk; do
+            echo "== $apk ($(du -h "$apk" | cut -f1))"
+            unzip -l "$apk" | grep -E '\.so$|baseline\.prof' || true
           done
