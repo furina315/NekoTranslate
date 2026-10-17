@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Placeholder product name; the repo/project is called LocalTranslate. -->
+    <string name="app_name">Neko Translate</string>
+</resources>
