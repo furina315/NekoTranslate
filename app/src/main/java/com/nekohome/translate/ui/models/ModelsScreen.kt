@@ -5,7 +5,14 @@ package com.nekohome.translate.ui.models
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,9 +26,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Memory
@@ -50,6 +59,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,6 +70,10 @@ import com.nekohome.translate.data.LocalModel
 import com.nekohome.translate.ui.MainUiState
 import com.nekohome.translate.ui.MainViewModel
 import com.nekohome.translate.ui.common.Format
+import com.nekohome.translate.ui.motion.LocalReduceMotion
+import com.nekohome.translate.ui.motion.Springs
+import com.nekohome.translate.ui.motion.bounceClick
+import com.nekohome.translate.ui.motion.motion
 
 @Composable
 fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
@@ -89,14 +104,17 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            state.importProgress?.let { p -> item(key = "import") { ImportProgress(p) } }
+            state.importProgress?.let { p -> item(key = "import") { Box(springItem()) { ImportProgress(p) } } }
 
             if (state.models.isEmpty()) {
-                item(key = "empty") { EmptyModels(onImport = launchImport, enabled = state.importProgress == null) }
+                item(key = "empty") {
+                    Box(springItem()) { EmptyModels(onImport = launchImport, enabled = state.importProgress == null) }
+                }
             }
 
             items(state.models, key = { it.file.absolutePath }) { model ->
                 ModelCard(
+                    modifier = springItem(),
                     model = model,
                     state = state,
                     onSelect = { vm.selectModel(model) },
@@ -114,25 +132,44 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 12.dp),
+                        modifier = Modifier
+                            .then(springItem())
+                            .padding(top = 12.dp),
                     )
                 }
-                item(key = "params") { ParamsPanel(model = selected, state = state, vm = vm) }
+                item(key = "params") { Box(springItem()) { ParamsPanel(model = selected, state = state, vm = vm) } }
             } else if (state.models.isNotEmpty()) {
                 item(key = "params-hint") {
                     Text(
                         stringResource(R.string.models_params_hint),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = springItem(),
                     )
                 }
             }
 
             if (state.systemInfo.isNotEmpty()) {
                 item(key = "runtime") {
-                    Column {
+                    Column(
+                        Modifier
+                            .then(springItem())
+                            .animateContentSize(motion(Springs.gentle())),
+                    ) {
+                        val chevron by animateFloatAsState(
+                            targetValue = if (showRuntimeInfo) 180f else 0f,
+                            animationSpec = motion(Springs.bouncy()),
+                            label = "runtimeChevron",
+                        )
                         TextButton(onClick = { showRuntimeInfo = !showRuntimeInfo }) {
                             Text(stringResource(R.string.models_runtime_info))
+                            Icon(
+                                Icons.Filled.ExpandMore,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(ButtonDefaults.IconSize)
+                                    .rotate(chevron),
+                            )
                         }
                         if (showRuntimeInfo) {
                             Text(
@@ -168,6 +205,23 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
         )
     }
 }
+
+/** Spring-y insert / remove / reorder for every row of the models list. */
+@Composable
+private fun LazyItemScope.springItem(): Modifier =
+    if (LocalReduceMotion.current) {
+        Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
+    } else {
+        Modifier.animateItem(
+            fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
+            placementSpec = spring(
+                dampingRatio = 0.7f,
+                stiffness = Spring.StiffnessMediumLow,
+                visibilityThreshold = IntOffset.VisibilityThreshold,
+            ),
+            fadeOutSpec = spring(stiffness = Spring.StiffnessMedium),
+        )
+    }
 
 @Composable
 private fun ImportProgress(p: Float) {
@@ -216,6 +270,7 @@ private fun EmptyModels(onImport: () -> Unit, enabled: Boolean) {
 
 @Composable
 private fun ModelCard(
+    modifier: Modifier,
     model: LocalModel,
     state: MainUiState,
     onSelect: () -> Unit,
@@ -232,7 +287,7 @@ private fun ModelCard(
 
     OutlinedCard(
         onClick = onSelect,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else CardDefaults.outlinedCardBorder(),
         colors = if (isLoaded) {
             CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
@@ -292,16 +347,18 @@ private fun ModelCard(
                     Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.models_delete))
                 }
                 Spacer(Modifier.weight(1f))
+                val src = remember { MutableInteractionSource() }
+                val bounce = Modifier.bounceClick(src)
                 when {
                     isLoadingThis -> OutlinedButton(onClick = {}, enabled = false) {
                         CircularProgressIndicator(Modifier.size(ButtonDefaults.IconSize), strokeWidth = 2.dp)
                         Spacer(Modifier.width(ButtonDefaults.IconSpacing))
                         Text(stringResource(R.string.models_loading))
                     }
-                    isLoaded -> OutlinedButton(onClick = onUnload, enabled = !state.isTranslating) {
+                    isLoaded -> OutlinedButton(onClick = onUnload, enabled = !state.isTranslating, interactionSource = src, modifier = bounce) {
                         Text(stringResource(R.string.models_unload))
                     }
-                    else -> Button(onClick = onLoad, enabled = !busy) {
+                    else -> Button(onClick = onLoad, enabled = !busy, interactionSource = src, modifier = bounce) {
                         Text(stringResource(R.string.models_load))
                     }
                 }

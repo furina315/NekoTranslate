@@ -1,8 +1,21 @@
 package com.nekohome.translate.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.annotation.StringRes
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,12 +45,16 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import com.nekohome.translate.R
 import com.nekohome.translate.data.AppSettings
 import com.nekohome.translate.ui.models.ModelsScreen
+import com.nekohome.translate.ui.motion.LocalReduceMotion
+import com.nekohome.translate.ui.motion.bounceClick
 import com.nekohome.translate.ui.settings.SettingsScreen
 import com.nekohome.translate.ui.settings.SettingsViewModel
 import com.nekohome.translate.ui.translate.TranslateScreen
@@ -72,6 +89,7 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
 
     KeepScreenOn(settings.keepScreenOn && (state.isTranslating || state.isLoading))
 
+    val reduceMotion = LocalReduceMotion.current
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbar) },
@@ -79,24 +97,50 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
             NavigationBar {
                 AppTab.entries.forEach { t ->
                     val selected = t == tab
+                    val src = remember { MutableInteractionSource() }
                     NavigationBarItem(
                         selected = selected,
                         onClick = { tab = t },
-                        icon = { Icon(if (selected) t.selectedIcon else t.icon, contentDescription = null) },
+                        interactionSource = src,
+                        icon = {
+                            Icon(
+                                if (selected) t.selectedIcon else t.icon,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .bounceClick(src, pressedScale = 0.8f)
+                                    .selectionPop(selected),
+                            )
+                        },
                         label = { Text(stringResource(t.label)) },
                     )
                 }
             }
         },
     ) { padding ->
-        Box(
-            Modifier
+        AnimatedContent(
+            targetState = tab,
+            transitionSpec = {
+                if (reduceMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    // Slide a fraction of the width toward the new tab's side of the bar.
+                    val dir = if (targetState.ordinal > initialState.ordinal) 1 else -1
+                    val slide = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMediumLow, visibilityThreshold = IntOffset.VisibilityThreshold)
+                    (slideInHorizontally(slide) { w -> dir * w / 6 } + fadeIn(spring(stiffness = Spring.StiffnessMedium)))
+                        .togetherWith(
+                            slideOutHorizontally(slide) { w -> -dir * w / 6 } + fadeOut(spring(stiffness = Spring.StiffnessHigh)),
+                        )
+                        .using(SizeTransform(clip = false))
+                }
+            },
+            label = "tab",
+            modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .consumeWindowInsets(padding),
-        ) {
-            tabStates.SaveableStateProvider(tab.name) {
-                when (tab) {
+        ) { shown ->
+            tabStates.SaveableStateProvider(shown.name) {
+                when (shown) {
                     AppTab.TRANSLATE -> TranslateScreen(
                         state = state,
                         vm = vm,
@@ -108,6 +152,26 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
                 }
             }
         }
+    }
+}
+
+/** Icon "pops" (shrinks, then springs past full size) when its tab becomes selected. */
+@Composable
+private fun Modifier.selectionPop(selected: Boolean): Modifier {
+    val reduceMotion = LocalReduceMotion.current
+    val scale = remember { Animatable(1f) }
+    var first by remember { mutableStateOf(true) }
+    LaunchedEffect(selected) {
+        if (first) {
+            first = false
+        } else if (selected && !reduceMotion) {
+            scale.snapTo(0.7f)
+            scale.animateTo(1f, spring(dampingRatio = 0.4f, stiffness = Spring.StiffnessMedium))
+        }
+    }
+    return graphicsLayer {
+        scaleX = scale.value
+        scaleY = scale.value
     }
 }
 

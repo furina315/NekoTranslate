@@ -7,6 +7,23 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,11 +76,14 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -75,6 +95,10 @@ import com.nekohome.translate.data.Language
 import com.nekohome.translate.llama.StopReason
 import com.nekohome.translate.ui.MainUiState
 import com.nekohome.translate.ui.MainViewModel
+import com.nekohome.translate.ui.motion.LocalReduceMotion
+import com.nekohome.translate.ui.motion.Springs
+import com.nekohome.translate.ui.motion.bounceClick
+import com.nekohome.translate.ui.motion.motion
 import java.util.Locale
 
 @Composable
@@ -117,7 +141,15 @@ fun TranslateScreen(
             ) {
                 LanguageBar(state, vm)
                 InputCard(state, vm)
-                if (state.output.isNotEmpty() || state.isTranslating) {
+                val reduceMotion = LocalReduceMotion.current
+                AnimatedVisibility(
+                    visible = state.output.isNotEmpty() || state.isTranslating,
+                    enter = if (reduceMotion) EnterTransition.None else
+                        fadeIn(Springs.smooth()) + scaleIn(Springs.bouncy(Spring.StiffnessMediumLow), initialScale = 0.92f) +
+                            expandVertically(Springs.gentle(), expandFrom = Alignment.Top),
+                    exit = if (reduceMotion) ExitTransition.None else
+                        fadeOut(Springs.smooth(Spring.StiffnessMedium)) + shrinkVertically(Springs.smooth(), shrinkTowards = Alignment.Top),
+                ) {
                     OutputCard(state, showStats)
                 }
                 Spacer(Modifier.height(16.dp))
@@ -211,8 +243,28 @@ private fun LanguageBar(state: MainUiState, vm: MainViewModel) {
                 enabled = !state.isTranslating,
                 modifier = Modifier.weight(1f),
             )
-            IconButton(onClick = vm::swapLanguages, enabled = !state.isTranslating) {
-                Icon(Icons.Filled.SwapHoriz, contentDescription = stringResource(R.string.translate_swap))
+            // Each swap spins the arrows half a turn with a bouncy spring.
+            var turns by rememberSaveable { mutableIntStateOf(0) }
+            val rotation by animateFloatAsState(
+                targetValue = turns * 180f,
+                animationSpec = motion(spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMediumLow)),
+                label = "swap",
+            )
+            val swapSource = remember { MutableInteractionSource() }
+            IconButton(
+                onClick = {
+                    turns++
+                    vm.swapLanguages()
+                },
+                enabled = !state.isTranslating,
+                interactionSource = swapSource,
+                modifier = Modifier.bounceClick(swapSource, pressedScale = 0.85f),
+            ) {
+                Icon(
+                    Icons.Filled.SwapHoriz,
+                    contentDescription = stringResource(R.string.translate_swap),
+                    modifier = Modifier.rotate(rotation),
+                )
             }
             LanguageButton(
                 selected = state.targetLanguage,
@@ -314,17 +366,39 @@ private fun InputCard(state: MainUiState, vm: MainViewModel) {
                 )
             }
             Spacer(Modifier.weight(1f))
-            if (state.isTranslating) {
-                FilledTonalButton(onClick = vm::stop) {
-                    Icon(Icons.Filled.Stop, contentDescription = null, Modifier.size(ButtonDefaults.IconSize))
-                    Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-                    Text(stringResource(R.string.translate_stop))
-                }
-            } else {
-                Button(onClick = vm::translate, enabled = state.canTranslate) {
-                    Icon(Icons.Filled.Translate, contentDescription = null, Modifier.size(ButtonDefaults.IconSize))
-                    Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-                    Text(stringResource(R.string.translate_action))
+            val reduceMotion = LocalReduceMotion.current
+            AnimatedContent(
+                targetState = state.isTranslating,
+                transitionSpec = {
+                    if (reduceMotion) {
+                        EnterTransition.None togetherWith ExitTransition.None
+                    } else {
+                        (scaleIn(Springs.bouncy(), initialScale = 0.8f) + fadeIn(Springs.smooth()))
+                            .togetherWith(scaleOut(Springs.smooth(), targetScale = 0.8f) + fadeOut(Springs.smooth()))
+                            .using(SizeTransform(clip = false))
+                    }
+                },
+                contentAlignment = Alignment.CenterEnd,
+                label = "translateAction",
+            ) { translating ->
+                val src = remember { MutableInteractionSource() }
+                if (translating) {
+                    FilledTonalButton(onClick = vm::stop, interactionSource = src, modifier = Modifier.bounceClick(src)) {
+                        Icon(Icons.Filled.Stop, contentDescription = null, Modifier.size(ButtonDefaults.IconSize))
+                        Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                        Text(stringResource(R.string.translate_stop))
+                    }
+                } else {
+                    Button(
+                        onClick = vm::translate,
+                        enabled = state.canTranslate,
+                        interactionSource = src,
+                        modifier = Modifier.bounceClick(src),
+                    ) {
+                        Icon(Icons.Filled.Translate, contentDescription = null, Modifier.size(ButtonDefaults.IconSize))
+                        Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                        Text(stringResource(R.string.translate_action))
+                    }
                 }
             }
         }
@@ -336,7 +410,9 @@ private fun OutputCard(state: MainUiState, showStats: Boolean) {
     val context = LocalContext.current
     val copiedText = stringResource(R.string.translate_copied)
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(motion(Springs.smooth(Spring.StiffnessMedium))),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
     ) {
         Column(Modifier.padding(start = 16.dp, top = 16.dp, end = 4.dp, bottom = 4.dp)) {
