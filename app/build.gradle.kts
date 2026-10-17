@@ -28,12 +28,18 @@ android {
             applicationIdSuffix = ".debug"
         }
         release {
+            // R8 + resource shrinking: Compose runs much faster once minified/optimized, and the
+            // profileinstaller below gets Compose's baseline profiles AOT-compiled at install.
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // TEMPORARY: signed with the local debug keystore so the CI release APK installs
+            // directly (adb install / file manager). Replace with a real release keystore before
+            // publishing anywhere; an APK signed this way cannot be updated by a properly signed one.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -56,6 +62,12 @@ android {
     }
 }
 
+composeCompiler {
+    // Treat immutable data/collection types from other modules (llama, java.io.File, kotlin.collections)
+    // as stable so composables taking them can skip when nothing changed.
+    stabilityConfigurationFiles.add(layout.projectDirectory.file("compose-stability.conf"))
+}
+
 dependencies {
     implementation(project(":llama"))
 
@@ -63,6 +75,8 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.profileinstaller)
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(platform(libs.androidx.compose.bom))
