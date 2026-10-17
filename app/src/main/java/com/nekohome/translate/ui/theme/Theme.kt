@@ -1,11 +1,9 @@
 package com.nekohome.translate.ui.theme
 
 import android.os.Build
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.AnimationSpec
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -15,8 +13,13 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import com.nekohome.translate.data.ThemeSeed
 import com.nekohome.translate.ui.motion.LocalReduceMotion
@@ -86,7 +89,7 @@ private fun SchemeArgb.toColorScheme(dark: Boolean): ColorScheme {
 /**
  * Material 3 theme: Material You dynamic color on Android 12+ when enabled, otherwise a scheme
  * generated from the chosen preset [seed]. Scheme changes (seed, light/dark, dynamic on/off)
- * cross-fade every color role with a spring; instant when the system disables animations.
+ * cross-fade with one short tween; instant when the system disables animations.
  */
 @Composable
 fun NekoTranslateTheme(
@@ -105,53 +108,104 @@ fun NekoTranslateTheme(
         }
     }
     val reduceMotion = rememberReduceMotion()
-    val colorScheme = animateColorScheme(target, if (reduceMotion) snap() else spring(stiffness = Spring.StiffnessLow))
+    val colorScheme = animateColorScheme(target, animate = !reduceMotion)
     CompositionLocalProvider(LocalReduceMotion provides reduceMotion) {
         MaterialTheme(colorScheme = colorScheme, content = content)
     }
 }
 
-/** Animates every role of [target]; one spring per role, only running while a change is in flight. */
+/**
+ * Cross-fades from the previous scheme to [target] with a single 0..1 progress value.
+ *
+ * Idle cost is zero: when no transition is running this returns the exact [target] instance, so
+ * MaterialTheme sees the same object and nothing below recomposes. (The previous version kept
+ * ~36 `animateColorAsState` animations alive and rebuilt the scheme with `copy()` on every
+ * recomposition, which handed MaterialTheme a new ColorScheme each time.)
+ *
+ * While a transition runs (≈300 ms) readers of the scheme recompose once per frame — the
+ * unavoidable price of animating every color role — and are left alone afterwards.
+ */
 @Composable
-private fun animateColorScheme(target: ColorScheme, spec: AnimationSpec<Color>): ColorScheme {
-    @Composable
-    fun a(c: Color): Color = animateColorAsState(c, spec, label = "scheme").value
-    return target.copy(
-        primary = a(target.primary),
-        onPrimary = a(target.onPrimary),
-        primaryContainer = a(target.primaryContainer),
-        onPrimaryContainer = a(target.onPrimaryContainer),
-        inversePrimary = a(target.inversePrimary),
-        secondary = a(target.secondary),
-        onSecondary = a(target.onSecondary),
-        secondaryContainer = a(target.secondaryContainer),
-        onSecondaryContainer = a(target.onSecondaryContainer),
-        tertiary = a(target.tertiary),
-        onTertiary = a(target.onTertiary),
-        tertiaryContainer = a(target.tertiaryContainer),
-        onTertiaryContainer = a(target.onTertiaryContainer),
-        background = a(target.background),
-        onBackground = a(target.onBackground),
-        surface = a(target.surface),
-        onSurface = a(target.onSurface),
-        surfaceVariant = a(target.surfaceVariant),
-        onSurfaceVariant = a(target.onSurfaceVariant),
-        surfaceTint = a(target.surfaceTint),
-        inverseSurface = a(target.inverseSurface),
-        inverseOnSurface = a(target.inverseOnSurface),
-        error = a(target.error),
-        onError = a(target.onError),
-        errorContainer = a(target.errorContainer),
-        onErrorContainer = a(target.onErrorContainer),
-        outline = a(target.outline),
-        outlineVariant = a(target.outlineVariant),
-        scrim = a(target.scrim),
-        surfaceBright = a(target.surfaceBright),
-        surfaceDim = a(target.surfaceDim),
-        surfaceContainer = a(target.surfaceContainer),
-        surfaceContainerHigh = a(target.surfaceContainerHigh),
-        surfaceContainerHighest = a(target.surfaceContainerHighest),
-        surfaceContainerLow = a(target.surfaceContainerLow),
-        surfaceContainerLowest = a(target.surfaceContainerLowest),
+private fun animateColorScheme(target: ColorScheme, animate: Boolean): ColorScheme {
+    val transition = remember { SchemeTransition(target) }
+    val progress = remember { Animatable(1f) }
+    LaunchedEffect(target, animate) {
+        if (target === transition.to) return@LaunchedEffect
+        // Start from whatever is on screen right now (handles a change mid-transition).
+        transition.from = lerpScheme(transition.from, transition.to, progress.value)
+        transition.to = target
+        if (animate) {
+            progress.snapTo(0f)
+            progress.animateTo(1f, tween(durationMillis = SCHEME_FADE_MS, easing = FastOutSlowInEasing))
+        } else {
+            progress.snapTo(1f)
+        }
+        transition.from = target
+    }
+    val p = progress.value
+    return if (p >= 1f) transition.to else lerpScheme(transition.from, transition.to, p)
+}
+
+private const val SCHEME_FADE_MS = 300
+
+/** [to] is snapshot state (an instant switch with animations off must still recompose); [from] is plain. */
+private class SchemeTransition(initial: ColorScheme) {
+    var from: ColorScheme = initial
+    var to: ColorScheme by mutableStateOf(initial)
+}
+
+internal fun lerpScheme(a: ColorScheme, b: ColorScheme, t: Float): ColorScheme {
+    if (t <= 0f) return a
+    if (t >= 1f || a === b) return b
+    fun l(x: Color, y: Color) = if (x == y) y else lerp(x, y, t)
+    return b.copy(
+        primary = l(a.primary, b.primary),
+        onPrimary = l(a.onPrimary, b.onPrimary),
+        primaryContainer = l(a.primaryContainer, b.primaryContainer),
+        onPrimaryContainer = l(a.onPrimaryContainer, b.onPrimaryContainer),
+        inversePrimary = l(a.inversePrimary, b.inversePrimary),
+        secondary = l(a.secondary, b.secondary),
+        onSecondary = l(a.onSecondary, b.onSecondary),
+        secondaryContainer = l(a.secondaryContainer, b.secondaryContainer),
+        onSecondaryContainer = l(a.onSecondaryContainer, b.onSecondaryContainer),
+        tertiary = l(a.tertiary, b.tertiary),
+        onTertiary = l(a.onTertiary, b.onTertiary),
+        tertiaryContainer = l(a.tertiaryContainer, b.tertiaryContainer),
+        onTertiaryContainer = l(a.onTertiaryContainer, b.onTertiaryContainer),
+        background = l(a.background, b.background),
+        onBackground = l(a.onBackground, b.onBackground),
+        surface = l(a.surface, b.surface),
+        onSurface = l(a.onSurface, b.onSurface),
+        surfaceVariant = l(a.surfaceVariant, b.surfaceVariant),
+        onSurfaceVariant = l(a.onSurfaceVariant, b.onSurfaceVariant),
+        surfaceTint = l(a.surfaceTint, b.surfaceTint),
+        inverseSurface = l(a.inverseSurface, b.inverseSurface),
+        inverseOnSurface = l(a.inverseOnSurface, b.inverseOnSurface),
+        error = l(a.error, b.error),
+        onError = l(a.onError, b.onError),
+        errorContainer = l(a.errorContainer, b.errorContainer),
+        onErrorContainer = l(a.onErrorContainer, b.onErrorContainer),
+        outline = l(a.outline, b.outline),
+        outlineVariant = l(a.outlineVariant, b.outlineVariant),
+        scrim = l(a.scrim, b.scrim),
+        surfaceBright = l(a.surfaceBright, b.surfaceBright),
+        surfaceDim = l(a.surfaceDim, b.surfaceDim),
+        surfaceContainer = l(a.surfaceContainer, b.surfaceContainer),
+        surfaceContainerHigh = l(a.surfaceContainerHigh, b.surfaceContainerHigh),
+        surfaceContainerHighest = l(a.surfaceContainerHighest, b.surfaceContainerHighest),
+        surfaceContainerLow = l(a.surfaceContainerLow, b.surfaceContainerLow),
+        surfaceContainerLowest = l(a.surfaceContainerLowest, b.surfaceContainerLowest),
+        primaryFixed = l(a.primaryFixed, b.primaryFixed),
+        primaryFixedDim = l(a.primaryFixedDim, b.primaryFixedDim),
+        onPrimaryFixed = l(a.onPrimaryFixed, b.onPrimaryFixed),
+        onPrimaryFixedVariant = l(a.onPrimaryFixedVariant, b.onPrimaryFixedVariant),
+        secondaryFixed = l(a.secondaryFixed, b.secondaryFixed),
+        secondaryFixedDim = l(a.secondaryFixedDim, b.secondaryFixedDim),
+        onSecondaryFixed = l(a.onSecondaryFixed, b.onSecondaryFixed),
+        onSecondaryFixedVariant = l(a.onSecondaryFixedVariant, b.onSecondaryFixedVariant),
+        tertiaryFixed = l(a.tertiaryFixed, b.tertiaryFixed),
+        tertiaryFixedDim = l(a.tertiaryFixedDim, b.tertiaryFixedDim),
+        onTertiaryFixed = l(a.onTertiaryFixed, b.onTertiaryFixed),
+        onTertiaryFixedVariant = l(a.onTertiaryFixedVariant, b.onTertiaryFixedVariant),
     )
 }
