@@ -15,6 +15,9 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
+        // Shown in 设置 → 关于; keep in sync with the third_party/llama.cpp submodule tag.
+        buildConfigField("String", "LLAMA_CPP_VERSION", "\"b11707\"")
+
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -41,6 +44,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -65,6 +69,8 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.datastore.preferences)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)
