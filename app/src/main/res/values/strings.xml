@@ -1,5 +1,111 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Placeholder product name; the repo/project is called LocalTranslate. -->
-    <string name="app_name">Neko Translate</string>
+    <string name="app_name" translatable="false">NekoTranslate</string>
+
+    <!-- 底部导航 -->
+    <string name="tab_translate">翻译</string>
+    <string name="tab_models">模型</string>
+    <string name="tab_settings">设置</string>
+
+    <!-- 翻译页 -->
+    <string name="translate_model_none">未加载模型</string>
+    <string name="translate_model_loading">加载中…</string>
+    <string name="translate_empty_title">还没有加载模型</string>
+    <string name="translate_empty_body">翻译完全在本机进行。请先在「模型」页导入一个 GGUF 翻译模型并加载。</string>
+    <string name="translate_empty_go_models">前往模型页</string>
+    <string name="translate_empty_load">加载 %1$s</string>
+    <string name="translate_auto_detect">自动检测</string>
+    <string name="translate_swap">交换语言</string>
+    <string name="translate_input_hint">输入要翻译的文本</string>
+    <string name="translate_paste">粘贴</string>
+    <string name="translate_clear">清空</string>
+    <string name="translate_action">翻译</string>
+    <string name="translate_stop">停止</string>
+    <string name="translate_copy">复制译文</string>
+    <string name="translate_copied">已复制</string>
+    <string name="translate_stats">%1$d tok · %2$s tok/s</string>
+    <string name="translate_stop_max_tokens">达到最大长度</string>
+    <string name="translate_stop_context_full">上下文已满</string>
+    <string name="translate_stop_cancelled">已停止</string>
+    <string name="translate_stop_error">出错</string>
+
+    <!-- 模型页 -->
+    <string name="models_title">模型</string>
+    <string name="models_import">导入 .gguf</string>
+    <string name="models_importing">正在导入… %1$d%%</string>
+    <string name="models_importing_indeterminate">正在导入…</string>
+    <string name="models_empty_title">还没有模型</string>
+    <string name="models_empty_body">从 Hugging Face 下载 GGUF 翻译模型（推荐 Q4_K_M，如 Index-Translate-2B、Hy-MT2-1.8B），再导入到这里。导入时请尽量保留官方文件名，以便自动匹配 Profile。</string>
+    <string name="models_loaded_badge">已加载</string>
+    <string name="models_load">加载</string>
+    <string name="models_unload">卸载</string>
+    <string name="models_loading">加载中…</string>
+    <string name="models_delete">删除</string>
+    <string name="models_delete_title">删除模型？</string>
+    <string name="models_delete_body">将从本机删除“%1$s”（%2$s）及其参数设置，此操作无法撤销。</string>
+    <string name="models_cancel">取消</string>
+    <string name="models_profile_auto_line">Profile：%1$s（自动匹配）</string>
+    <string name="models_profile_manual_line">Profile：%1$s（手动）</string>
+    <string name="models_load_info">加载 %1$s s · ctx %2$d · %3$d 线程%4$s</string>
+    <string name="models_params_title">参数 · %1$s</string>
+    <string name="models_params_hint">点选上方的模型卡片来调整它的参数。参数按模型分别保存。</string>
+    <string name="models_section_profile">提示词 Profile</string>
+    <string name="models_profile_auto">自动匹配：%1$s</string>
+    <string name="models_custom_template">Prompt 模板</string>
+    <string name="models_custom_template_help">占位符：{source_lang} {target_lang} {text}。使用 GGUF 自带的对话模板包装。</string>
+    <string name="models_custom_template_reset">恢复默认模板</string>
+    <string name="models_section_sampling">采样</string>
+    <string name="models_temperature">温度 Temperature</string>
+    <string name="models_top_p">Top-p</string>
+    <string name="models_top_k">Top-k</string>
+    <string name="models_repeat_penalty">重复惩罚</string>
+    <string name="models_max_tokens">最大生成长度</string>
+    <string name="models_section_load">加载参数</string>
+    <string name="models_section_load_hint">修改后需重新加载模型才会生效。</string>
+    <string name="models_context">上下文长度</string>
+    <string name="models_threads">线程数</string>
+    <string name="models_default_suffix">默认</string>
+    <string name="models_off">关闭</string>
+    <string name="models_greedy">贪心</string>
+    <string name="models_reset_defaults">恢复 Profile 默认值</string>
+    <string name="models_reload_needed">上下文长度或线程数已修改，重新加载后生效。</string>
+    <string name="models_reload">重新加载</string>
+    <string name="models_runtime_info">运行时信息</string>
+
+    <!-- ViewModel 提示 -->
+    <string name="msg_imported">已导入 %1$s（%2$s）</string>
+    <string name="msg_import_failed">导入失败：%1$s</string>
+    <string name="msg_deleted">已删除 %1$s</string>
+    <string name="msg_loaded">已加载 %1$s</string>
+    <string name="msg_load_failed">加载失败：%1$s</string>
+    <string name="msg_load_failed_hy_hint">（Hy-MT2 的 1.25bit/2bit GGUF 需要非主线 STQ 内核，无法加载，请改用 Q4_K_M 等常规量化）</string>
+    <string name="msg_translate_failed">翻译失败：%1$s</string>
+
+    <!-- 设置页 -->
+    <string name="settings_title">设置</string>
+    <string name="settings_section_appearance">外观</string>
+    <string name="settings_theme">主题</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_dynamic_color">动态取色</string>
+    <string name="settings_dynamic_color_desc">跟随壁纸配色（Android 12 及以上）</string>
+    <string name="settings_dynamic_color_unsupported">需要 Android 12 及以上</string>
+    <string name="settings_section_translate">翻译</string>
+    <string name="settings_default_target">默认目标语言</string>
+    <string name="settings_keep_screen_on">翻译时保持屏幕常亮</string>
+    <string name="settings_keep_screen_on_desc">加载模型或生成译文期间不熄屏</string>
+    <string name="settings_show_stats">显示速度统计</string>
+    <string name="settings_show_stats_desc">在译文下方显示 tokens 数与 tok/s</string>
+    <string name="settings_section_about">关于</string>
+    <string name="settings_version">版本 %1$s</string>
+    <string name="settings_llama_version">llama.cpp 版本</string>
+    <string name="settings_license">许可证</string>
+    <string name="settings_license_value">Apache-2.0</string>
+    <string name="settings_github">GitHub 仓库</string>
+    <string name="settings_github_url" translatable="false">https://github.com/furina315/NekoTranslate</string>
+    <string name="settings_open_source">开源许可</string>
+    <string name="settings_open_source_desc">llama.cpp：MIT License\n模型权重：Apache-2.0（以各模型发布页为准）</string>
+    <string name="settings_no_browser">没有可以打开链接的应用</string>
+    <string name="settings_close">关闭</string>
 </resources>
