@@ -24,6 +24,8 @@ enum class ThemeMode {
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
+    /** Preset seed used when dynamic color is off or unsupported. */
+    val themeSeed: ThemeSeed = ThemeSeed.DEFAULT,
     val defaultTargetCode: String = "en",
     val keepScreenOn: Boolean = true,
     val showStats: Boolean = true,
@@ -42,6 +44,7 @@ class SettingsRepository(context: Context) {
             AppSettings(
                 themeMode = ThemeMode.fromKey(p[THEME]),
                 dynamicColor = p[DYNAMIC_COLOR] ?: d.dynamicColor,
+                themeSeed = ThemeSeed.fromKey(p[THEME_SEED]),
                 defaultTargetCode = p[DEFAULT_TARGET] ?: d.defaultTargetCode,
                 keepScreenOn = p[KEEP_SCREEN_ON] ?: d.keepScreenOn,
                 showStats = p[SHOW_STATS] ?: d.showStats,
@@ -50,6 +53,7 @@ class SettingsRepository(context: Context) {
 
     suspend fun setThemeMode(mode: ThemeMode) = store.edit { it[THEME] = mode.name }
     suspend fun setDynamicColor(on: Boolean) = store.edit { it[DYNAMIC_COLOR] = on }
+    suspend fun setThemeSeed(seed: ThemeSeed) = store.edit { it[THEME_SEED] = seed.key }
     suspend fun setDefaultTarget(code: String) = store.edit { it[DEFAULT_TARGET] = code }
     suspend fun setKeepScreenOn(on: Boolean) = store.edit { it[KEEP_SCREEN_ON] = on }
     suspend fun setShowStats(on: Boolean) = store.edit { it[SHOW_STATS] = on }
@@ -57,6 +61,7 @@ class SettingsRepository(context: Context) {
     private companion object {
         val THEME = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        val THEME_SEED = stringPreferencesKey("theme_seed")
         val DEFAULT_TARGET = stringPreferencesKey("default_target")
         val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         val SHOW_STATS = booleanPreferencesKey("show_stats")

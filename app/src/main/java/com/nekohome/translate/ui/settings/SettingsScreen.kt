@@ -8,6 +8,13 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -62,6 +69,8 @@ import com.nekohome.translate.R
 import com.nekohome.translate.data.AppSettings
 import com.nekohome.translate.data.BuiltInProfiles
 import com.nekohome.translate.data.ThemeMode
+import com.nekohome.translate.ui.motion.LocalReduceMotion
+import com.nekohome.translate.ui.motion.Springs
 
 private enum class SettingsDialog { THEME, TARGET }
 
@@ -103,6 +112,17 @@ fun SettingsScreen(settings: AppSettings, vm: SettingsViewModel) {
                 enabled = dynamicSupported,
                 onCheckedChange = vm::setDynamicColor,
             )
+            // Preset palette: only meaningful while dynamic color is not in effect.
+            val reduceMotion = LocalReduceMotion.current
+            AnimatedVisibility(
+                visible = !(settings.dynamicColor && dynamicSupported),
+                enter = if (reduceMotion) EnterTransition.None else
+                    expandVertically(Springs.gentle()) + fadeIn(Springs.smooth()),
+                exit = if (reduceMotion) ExitTransition.None else
+                    shrinkVertically(Springs.gentle()) + fadeOut(Springs.smooth()),
+            ) {
+                ThemeColorPicker(selected = settings.themeSeed, onSelect = vm::setThemeSeed)
+            }
 
             SectionHeader(stringResource(R.string.settings_section_translate))
             SettingItem(

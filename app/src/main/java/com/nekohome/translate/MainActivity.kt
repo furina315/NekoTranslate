@@ -37,7 +37,11 @@ class MainActivity : ComponentActivity() {
                 )
                 onDispose {}
             }
-            NekoTranslateTheme(darkTheme = darkTheme, dynamicColor = settings.dynamicColor) {
+            NekoTranslateTheme(
+                darkTheme = darkTheme,
+                dynamicColor = settings.dynamicColor,
+                seed = settings.themeSeed,
+            ) {
                 val vm: MainViewModel = viewModel()
                 AppRoot(vm = vm, settingsVm = settingsVm, settings = settings)
             }

@@ -71,6 +71,10 @@
     <string name="models_reload_needed">上下文长度或线程数已修改，重新加载后生效。</string>
     <string name="models_reload">重新加载</string>
     <string name="models_runtime_info">运行时信息</string>
+    <string name="models_section_expand">展开</string>
+    <string name="models_section_collapse">收起</string>
+    <string name="models_decrease">减小</string>
+    <string name="models_increase">增大</string>
 
     <!-- ViewModel 提示 -->
     <string name="msg_imported">已导入 %1$s（%2$s）</string>
@@ -91,6 +95,20 @@
     <string name="settings_dynamic_color">动态取色</string>
     <string name="settings_dynamic_color_desc">跟随壁纸配色（Android 12 及以上）</string>
     <string name="settings_dynamic_color_unsupported">需要 Android 12 及以上</string>
+    <string name="settings_theme_color">主题色</string>
+    <string name="settings_theme_color_desc">%1$s · 关闭动态取色时生效</string>
+    <string name="theme_seed_sakura">樱粉</string>
+    <string name="theme_seed_crimson">绯红</string>
+    <string name="theme_seed_orange">橘橙</string>
+    <string name="theme_seed_amber">琥珀</string>
+    <string name="theme_seed_lime">黄绿</string>
+    <string name="theme_seed_green">翠绿</string>
+    <string name="theme_seed_teal">青碧</string>
+    <string name="theme_seed_sky">天蓝</string>
+    <string name="theme_seed_blue">湛蓝</string>
+    <string name="theme_seed_indigo">靛青</string>
+    <string name="theme_seed_violet">紫罗兰</string>
+    <string name="theme_seed_taupe">棕灰</string>
     <string name="settings_section_translate">翻译</string>
     <string name="settings_default_target">默认目标语言</string>
     <string name="settings_keep_screen_on">翻译时保持屏幕常亮</string>
@@ -105,7 +123,7 @@
     <string name="settings_github">GitHub 仓库</string>
     <string name="settings_github_url" translatable="false">https://github.com/furina315/NekoTranslate</string>
     <string name="settings_open_source">开源许可</string>
-    <string name="settings_open_source_desc">llama.cpp：MIT License\n模型权重：Apache-2.0（以各模型发布页为准）</string>
+    <string name="settings_open_source_desc">llama.cpp：MIT License\nMaterialKolor（取色算法）：MIT / Apache-2.0\n模型权重：Apache-2.0（以各模型发布页为准）</string>
     <string name="settings_no_browser">没有可以打开链接的应用</string>
     <string name="settings_close">关闭</string>
 </resources>

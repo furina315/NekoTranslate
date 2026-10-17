@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.nekohome.translate.data.AppSettings
 import com.nekohome.translate.data.SettingsRepository
 import com.nekohome.translate.data.ThemeMode
+import com.nekohome.translate.data.ThemeSeed
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -20,6 +21,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setThemeMode(mode: ThemeMode) { viewModelScope.launch { repository.setThemeMode(mode) } }
     fun setDynamicColor(on: Boolean) { viewModelScope.launch { repository.setDynamicColor(on) } }
+    fun setThemeSeed(seed: ThemeSeed) { viewModelScope.launch { repository.setThemeSeed(seed) } }
     fun setDefaultTarget(code: String) { viewModelScope.launch { repository.setDefaultTarget(code) } }
     fun setKeepScreenOn(on: Boolean) { viewModelScope.launch { repository.setKeepScreenOn(on) } }
     fun setShowStats(on: Boolean) { viewModelScope.launch { repository.setShowStats(on) } }
