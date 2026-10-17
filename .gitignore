@@ -1,0 +1,28 @@
+# Gradle / Android Studio
+.gradle/
+build/
+/local.properties
+/captures/
+.externalNativeBuild/
+.cxx/
+*.iml
+.idea/
+.kotlin/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.hprof
+
+# Keystores / secrets
+*.jks
+*.keystore
+keystore.properties
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models never go into git
+*.gguf
+*.gguf.part
