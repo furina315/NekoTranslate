@@ -15,6 +15,7 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -83,13 +84,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nekohome.translate.R
 import com.nekohome.translate.data.Language
 import com.nekohome.translate.llama.StopReason
@@ -113,12 +116,20 @@ fun TranslateScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.app_name)) },
                 actions = {
-                    ModelChip(state, onOpenModels)
+                    ModelChip(
+                        isLoading = state.isLoading,
+                        loadedName = state.loadedModel?.file?.nameWithoutExtension,
+                        onClick = onOpenModels,
+                    )
                     Spacer(Modifier.width(8.dp))
                 },
             )
         },
     ) { padding ->
+        // Streaming text is collected here but only *read* inside StreamingText / click handlers,
+        // so new tokens recompose just that Text, not this screen.
+        val output = vm.output.collectAsStateWithLifecycle()
+        val outputProvider = remember(output) { { output.value } }
         if (state.loaded == null) {
             NoModelState(
                 state = state,
@@ -139,18 +150,47 @@ fun TranslateScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                LanguageBar(state, vm)
-                InputCard(state, vm)
+                val profile = state.activeProfile
+                val sourceOptions = remember(profile) { listOf(Language.AUTO) + profile.languages }
+                LanguageBar(
+                    source = state.sourceLanguage,
+                    target = state.targetLanguage,
+                    sourceOptions = sourceOptions,
+                    targetOptions = profile.languages,
+                    enabled = !state.isTranslating,
+                    onSource = vm::setSource,
+                    onTarget = vm::setTarget,
+                    onSwap = vm::swapLanguages,
+                )
+                InputCard(
+                    input = state.input,
+                    isTranslating = state.isTranslating,
+                    canTranslate = state.canTranslate,
+                    onInput = vm::setInput,
+                    onClear = vm::clearInput,
+                    onTranslate = vm::translate,
+                    onStop = vm::stop,
+                )
                 val reduceMotion = LocalReduceMotion.current
                 AnimatedVisibility(
-                    visible = state.output.isNotEmpty() || state.isTranslating,
+                    visible = state.hasOutput || state.isTranslating,
+                    // Large card: fade + expand without overshoot (a bouncy scale here re-laid-out
+                    // the whole column for several hundred ms).
                     enter = if (reduceMotion) EnterTransition.None else
-                        fadeIn(Springs.smooth()) + scaleIn(Springs.bouncy(Spring.StiffnessMediumLow), initialScale = 0.92f) +
-                            expandVertically(Springs.gentle(), expandFrom = Alignment.Top),
+                        fadeIn(Springs.smooth(Spring.StiffnessMedium)) +
+                            expandVertically(Springs.gentle(Spring.StiffnessMedium), expandFrom = Alignment.Top),
                     exit = if (reduceMotion) ExitTransition.None else
-                        fadeOut(Springs.smooth(Spring.StiffnessMedium)) + shrinkVertically(Springs.smooth(), shrinkTowards = Alignment.Top),
+                        fadeOut(Springs.smooth(Spring.StiffnessMedium)) +
+                            shrinkVertically(Springs.gentle(Spring.StiffnessMedium), shrinkTowards = Alignment.Top),
                 ) {
-                    OutputCard(state, showStats)
+                    OutputCard(
+                        targetName = state.targetLanguage.nameZh,
+                        isTranslating = state.isTranslating,
+                        hasOutput = state.hasOutput,
+                        output = outputProvider,
+                        stats = state.stats,
+                        showStats = showStats,
+                    )
                 }
                 Spacer(Modifier.height(16.dp))
             }
@@ -159,10 +199,10 @@ fun TranslateScreen(
 }
 
 @Composable
-private fun ModelChip(state: MainUiState, onClick: () -> Unit) {
+private fun ModelChip(isLoading: Boolean, loadedName: String?, onClick: () -> Unit) {
     val label = when {
-        state.isLoading -> stringResource(R.string.translate_model_loading)
-        state.loadedModel != null -> state.loadedModel!!.file.nameWithoutExtension
+        isLoading -> stringResource(R.string.translate_model_loading)
+        loadedName != null -> loadedName
         else -> stringResource(R.string.translate_model_none)
     }
     AssistChip(
@@ -171,7 +211,7 @@ private fun ModelChip(state: MainUiState, onClick: () -> Unit) {
             Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 160.dp))
         },
         leadingIcon = {
-            if (state.isLoading) {
+            if (isLoading) {
                 CircularProgressIndicator(Modifier.size(AssistChipDefaults.IconSize), strokeWidth = 2.dp)
             } else {
                 Icon(Icons.Outlined.Memory, contentDescription = null, Modifier.size(AssistChipDefaults.IconSize))
@@ -228,8 +268,16 @@ private fun NoModelState(
 }
 
 @Composable
-private fun LanguageBar(state: MainUiState, vm: MainViewModel) {
-    val profile = state.activeProfile
+private fun LanguageBar(
+    source: Language,
+    target: Language,
+    sourceOptions: List<Language>,
+    targetOptions: List<Language>,
+    enabled: Boolean,
+    onSource: (String) -> Unit,
+    onTarget: (String) -> Unit,
+    onSwap: () -> Unit,
+) {
     Surface(
         shape = MaterialTheme.shapes.extraLarge,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -237,15 +285,16 @@ private fun LanguageBar(state: MainUiState, vm: MainViewModel) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(4.dp)) {
             LanguageButton(
-                selected = state.sourceLanguage,
-                options = listOf(Language.AUTO) + profile.languages,
-                onSelect = { vm.setSource(it.code) },
-                enabled = !state.isTranslating,
+                selected = source,
+                options = sourceOptions,
+                onSelect = { onSource(it.code) },
+                enabled = enabled,
                 modifier = Modifier.weight(1f),
             )
-            // Each swap spins the arrows half a turn with a bouncy spring.
+            // Each swap spins the arrows half a turn with a bouncy spring. The angle is read in the
+            // graphics layer (draw phase), so the spin never recomposes the bar.
             var turns by rememberSaveable { mutableIntStateOf(0) }
-            val rotation by animateFloatAsState(
+            val rotation = animateFloatAsState(
                 targetValue = turns * 180f,
                 animationSpec = motion(spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMediumLow)),
                 label = "swap",
@@ -254,23 +303,23 @@ private fun LanguageBar(state: MainUiState, vm: MainViewModel) {
             IconButton(
                 onClick = {
                     turns++
-                    vm.swapLanguages()
+                    onSwap()
                 },
-                enabled = !state.isTranslating,
+                enabled = enabled,
                 interactionSource = swapSource,
                 modifier = Modifier.bounceClick(swapSource, pressedScale = 0.85f),
             ) {
                 Icon(
                     Icons.Filled.SwapHoriz,
                     contentDescription = stringResource(R.string.translate_swap),
-                    modifier = Modifier.rotate(rotation),
+                    modifier = Modifier.graphicsLayer { rotationZ = rotation.value },
                 )
             }
             LanguageButton(
-                selected = state.targetLanguage,
-                options = profile.languages,
-                onSelect = { vm.setTarget(it.code) },
-                enabled = !state.isTranslating,
+                selected = target,
+                options = targetOptions,
+                onSelect = { onTarget(it.code) },
+                enabled = enabled,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -324,15 +373,23 @@ private fun languageLabel(lang: Language): String =
     if (lang.isAuto) stringResource(R.string.translate_auto_detect) else lang.nameZh
 
 @Composable
-private fun InputCard(state: MainUiState, vm: MainViewModel) {
+private fun InputCard(
+    input: String,
+    isTranslating: Boolean,
+    canTranslate: Boolean,
+    onInput: (String) -> Unit,
+    onClear: () -> Unit,
+    onTranslate: () -> Unit,
+    onStop: () -> Unit,
+) {
     val context = LocalContext.current
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         TextField(
-            value = state.input,
-            onValueChange = vm::setInput,
+            value = input,
+            onValueChange = onInput,
             placeholder = { Text(stringResource(R.string.translate_input_hint)) },
             textStyle = MaterialTheme.typography.titleMedium,
             modifier = Modifier
@@ -351,16 +408,16 @@ private fun InputCard(state: MainUiState, vm: MainViewModel) {
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(start = 4.dp, end = 12.dp, bottom = 12.dp),
         ) {
-            if (state.input.isEmpty()) {
-                IconButton(onClick = { pasteText(context)?.let(vm::setInput) }) {
+            if (input.isEmpty()) {
+                IconButton(onClick = { pasteText(context)?.let(onInput) }) {
                     Icon(Icons.Outlined.ContentPaste, contentDescription = stringResource(R.string.translate_paste))
                 }
             } else {
-                IconButton(onClick = vm::clearInput, enabled = !state.isTranslating) {
+                IconButton(onClick = onClear, enabled = !isTranslating) {
                     Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.translate_clear))
                 }
                 Text(
-                    state.input.length.toString(),
+                    input.length.toString(),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -368,14 +425,17 @@ private fun InputCard(state: MainUiState, vm: MainViewModel) {
             Spacer(Modifier.weight(1f))
             val reduceMotion = LocalReduceMotion.current
             AnimatedContent(
-                targetState = state.isTranslating,
+                targetState = isTranslating,
                 transitionSpec = {
                     if (reduceMotion) {
                         EnterTransition.None togetherWith ExitTransition.None
                     } else {
-                        (scaleIn(Springs.bouncy(), initialScale = 0.8f) + fadeIn(Springs.smooth()))
-                            .togetherWith(scaleOut(Springs.smooth(), targetScale = 0.8f) + fadeOut(Springs.smooth()))
-                            .using(SizeTransform(clip = false))
+                        (scaleIn(Springs.bouncy(), initialScale = 0.8f) + fadeIn(Springs.smooth(Spring.StiffnessMedium)))
+                            .togetherWith(
+                                scaleOut(Springs.smooth(Spring.StiffnessMedium), targetScale = 0.8f) +
+                                    fadeOut(Springs.smooth(Spring.StiffnessMedium)),
+                            )
+                            .using(SizeTransform(clip = false) { _, _ -> Springs.gentle(Spring.StiffnessMedium) })
                     }
                 },
                 contentAlignment = Alignment.CenterEnd,
@@ -383,15 +443,15 @@ private fun InputCard(state: MainUiState, vm: MainViewModel) {
             ) { translating ->
                 val src = remember { MutableInteractionSource() }
                 if (translating) {
-                    FilledTonalButton(onClick = vm::stop, interactionSource = src, modifier = Modifier.bounceClick(src)) {
+                    FilledTonalButton(onClick = onStop, interactionSource = src, modifier = Modifier.bounceClick(src)) {
                         Icon(Icons.Filled.Stop, contentDescription = null, Modifier.size(ButtonDefaults.IconSize))
                         Spacer(Modifier.width(ButtonDefaults.IconSpacing))
                         Text(stringResource(R.string.translate_stop))
                     }
                 } else {
                     Button(
-                        onClick = vm::translate,
-                        enabled = state.canTranslate,
+                        onClick = onTranslate,
+                        enabled = canTranslate,
                         interactionSource = src,
                         modifier = Modifier.bounceClick(src),
                     ) {
@@ -406,35 +466,45 @@ private fun InputCard(state: MainUiState, vm: MainViewModel) {
 }
 
 @Composable
-private fun OutputCard(state: MainUiState, showStats: Boolean) {
+private fun OutputCard(
+    targetName: String,
+    isTranslating: Boolean,
+    hasOutput: Boolean,
+    output: () -> String,
+    stats: com.nekohome.translate.ui.GenStats?,
+    showStats: Boolean,
+) {
     val context = LocalContext.current
     val copiedText = stringResource(R.string.translate_copied)
+    // While streaming, the card grows line by line; animating each growth restarts a size
+    // animation many times a second and keeps clipping the newest line, so size changes snap
+    // during a translation and animate only for one-off changes afterwards.
+    val sizeSpec = if (isTranslating) snap() else motion(Springs.smooth<IntSize>(Spring.StiffnessMedium))
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .animateContentSize(motion(Springs.smooth(Spring.StiffnessMedium))),
+            .animateContentSize(sizeSpec),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
     ) {
         Column(Modifier.padding(start = 16.dp, top = 16.dp, end = 4.dp, bottom = 4.dp)) {
             Text(
-                state.targetLanguage.nameZh,
+                targetName,
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
             )
             Spacer(Modifier.height(8.dp))
-            if (state.isTranslating && state.output.isEmpty()) {
+            if (isTranslating && !hasOutput) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(end = 12.dp, top = 8.dp, bottom = 16.dp))
             } else {
-                SelectionContainer(Modifier.padding(end = 12.dp)) {
-                    Text(
-                        state.output,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
+                // No SelectionContainer while streaming: selection state would be rebuilt on
+                // every update. Text becomes selectable as soon as the translation finishes.
+                if (isTranslating) {
+                    StreamingText(output, Modifier.padding(end = 12.dp))
+                } else {
+                    SelectionContainer(Modifier.padding(end = 12.dp)) { StreamingText(output) }
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 48.dp)) {
-                val stats = state.stats
                 Text(
                     text = if (showStats && stats != null) statsLabel(stats) else "",
                     style = MaterialTheme.typography.labelSmall,
@@ -443,19 +513,30 @@ private fun OutputCard(state: MainUiState, showStats: Boolean) {
                 )
                 IconButton(
                     onClick = {
-                        copyText(context, state.output)
+                        copyText(context, output())
                         // Android 13+ shows its own clipboard confirmation.
                         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
                             Toast.makeText(context, copiedText, Toast.LENGTH_SHORT).show()
                         }
                     },
-                    enabled = state.output.isNotEmpty() && !state.isTranslating,
+                    enabled = hasOutput && !isTranslating,
                 ) {
                     Icon(Icons.Outlined.ContentCopy, contentDescription = stringResource(R.string.translate_copy))
                 }
             }
         }
     }
+}
+
+/** The only composable that reads the streamed text, so a token update recomposes just this. */
+@Composable
+private fun StreamingText(text: () -> String, modifier: Modifier = Modifier) {
+    Text(
+        text(),
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = modifier,
+    )
 }
 
 @Composable

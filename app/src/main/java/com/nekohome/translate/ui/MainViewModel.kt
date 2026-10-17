@@ -19,6 +19,8 @@ import com.nekohome.translate.engine.GenerationEvent
 import com.nekohome.translate.engine.LoadedModel
 import com.nekohome.translate.engine.MemoryStats
 import com.nekohome.translate.engine.TranslationEngine
+import com.nekohome.translate.engine.throttleLatest
+import androidx.compose.runtime.Immutable
 import com.nekohome.translate.llama.StopReason
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -36,12 +38,18 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /** Result of the last finished generation (shown subtly under the output). */
+@Immutable
 data class GenStats(
     val generatedTokens: Int,
     val tokensPerSecond: Double,
     val stopReason: StopReason,
 )
 
+/**
+ * Everything the three tabs show, except the streaming translation text, which lives in
+ * [MainViewModel.output] so per-token updates don't invalidate the whole screen.
+ */
+@Immutable
 data class MainUiState(
     val models: List<LocalModel> = emptyList(),
     /** Model whose parameters the 模型 tab is editing. */
@@ -56,7 +64,8 @@ data class MainUiState(
     val sourceCode: String = Language.AUTO_CODE,
     val targetCode: String = "en",
     val input: String = "",
-    val output: String = "",
+    /** Mirrors `output.isNotEmpty()`; only flips at the start / end of a translation. */
+    val hasOutput: Boolean = false,
     val isTranslating: Boolean = false,
     val stats: GenStats? = null,
     val message: String? = null,
@@ -98,6 +107,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(MainUiState())
     val state: StateFlow<MainUiState> = _state.asStateFlow()
+
+    /**
+     * Translation text, streamed separately from [state]: only the output text composable reads
+     * it, so a new token recomposes that one Text instead of every tab. Updates are throttled to
+     * ~30 fps (see [throttleLatest]).
+     */
+    private val _output = MutableStateFlow("")
+    val output: StateFlow<String> = _output.asStateFlow()
+
+    private fun setOutput(text: String) {
+        _output.value = text
+        val has = text.isNotEmpty()
+        if (_state.value.hasOutput != has) _state.update { it.copy(hasOutput = has) }
+    }
 
     private var translateJob: Job? = null
     private val saveJobs = HashMap<String, Job>()
@@ -261,16 +284,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setSource(code: String) = _state.update { it.copy(sourceCode = code) }
     fun setTarget(code: String) = _state.update { it.copy(targetCode = code) }
     fun setInput(text: String) = _state.update { it.copy(input = text) }
-    fun clearInput() = _state.update { it.copy(input = "", output = "", stats = null) }
+    fun clearInput() {
+        setOutput("")
+        _state.update { it.copy(input = "", stats = null) }
+    }
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     fun swapLanguages() {
-        _state.update { st ->
-            val (src, tgt) = LanguageRules.swap(st.activeProfile, st.sourceCode, st.targetCode)
-            // Carry the previous translation over as the new input, like mainstream translators.
-            val newInput = if (st.output.isNotBlank() && !st.isTranslating) st.output else st.input
-            st.copy(sourceCode = src, targetCode = tgt, input = newInput, output = if (newInput != st.input) "" else st.output)
-        }
+        val st = _state.value
+        val out = _output.value
+        val (src, tgt) = LanguageRules.swap(st.activeProfile, st.sourceCode, st.targetCode)
+        // Carry the previous translation over as the new input, like mainstream translators.
+        val newInput = if (out.isNotBlank() && !st.isTranslating) out else st.input
+        if (newInput != st.input) setOutput("")
+        _state.update { it.copy(sourceCode = src, targetCode = tgt, input = newInput) }
     }
 
     fun translate() {
@@ -282,18 +309,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val userPrompt = profile.buildUserPrompt(st.sourceLanguage, st.targetLanguage, st.input)
         translateJob?.cancel()
         translateJob = viewModelScope.launch {
-            _state.update { it.copy(isTranslating = true, output = "", stats = null, message = null) }
+            setOutput("")
+            _state.update { it.copy(isTranslating = true, stats = null, message = null) }
             try {
-                engine.translate(profile, userPrompt, sampling).collect { ev ->
+                engine.translate(profile, userPrompt, sampling).throttleLatest(OUTPUT_FRAME_MS).collect { ev ->
                     when (ev) {
-                        is GenerationEvent.Partial -> _state.update { it.copy(output = ev.text) }
-                        is GenerationEvent.Done -> _state.update {
-                            it.copy(
-                                output = ev.text,
-                                isTranslating = false,
-                                message = ev.stats.errorMessage(),
-                                stats = GenStats(ev.stats.generatedTokens, ev.stats.tokensPerSecond, ev.stats.stopReason),
-                            )
+                        is GenerationEvent.Partial -> setOutput(ev.text)
+                        is GenerationEvent.Done -> {
+                            setOutput(ev.text)
+                            _state.update {
+                                it.copy(
+                                    isTranslating = false,
+                                    message = ev.stats.errorMessage(),
+                                    stats = GenStats(ev.stats.generatedTokens, ev.stats.tokensPerSecond, ev.stats.stopReason),
+                                )
+                            }
                         }
                     }
                 }
@@ -315,5 +345,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val SAVE_DEBOUNCE_MS = 300L
+
+        /** Max UI update rate for streamed output (~30 fps); the final text is always delivered. */
+        const val OUTPUT_FRAME_MS = 33L
     }
 }
