@@ -1,4 +1,4 @@
-// LocalTranslate JNI bridge for llama.cpp.
+// NekoTranslate JNI bridge for llama.cpp.
 //
 // Only the public C API in llama.h is used (no common/ helpers), so this file keeps compiling across
 // llama.cpp updates as long as llama.h stays source compatible.
@@ -25,7 +25,7 @@
 #include "llama.h"
 #include "ggml-backend.h"
 
-#define TAG "LocalTranslate"
+#define TAG "NekoTranslate"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)

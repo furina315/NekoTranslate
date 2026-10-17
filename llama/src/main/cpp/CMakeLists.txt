@@ -1,4 +1,4 @@
-# LocalTranslate JNI bridge on top of llama.cpp (git submodule at third_party/llama.cpp).
+# NekoTranslate JNI bridge on top of llama.cpp (git submodule at third_party/llama.cpp).
 # Pattern follows llama.cpp's examples/llama.android/lib: llama.cpp is add_subdirectory'd,
 # ggml CPU backends are built as dynamically loadable variants and picked at runtime.
 cmake_minimum_required(VERSION 3.22.1)
@@ -15,7 +15,7 @@ set(LT_CPU_ARCH "armv8.6-a+dotprod+i8mm+fp16" CACHE STRING "-march used when LT_
 option(LT_KLEIDIAI "Enable Arm KleidiAI kernels in the ggml CPU backend" ON)
 
 if (NOT ANDROID_ABI STREQUAL "arm64-v8a")
-    message(FATAL_ERROR "LocalTranslate only supports arm64-v8a (got ${ANDROID_ABI})")
+    message(FATAL_ERROR "NekoTranslate only supports arm64-v8a (got ${ANDROID_ABI})")
 endif()
 
 # ggml options must be set before add_subdirectory (CMP0077: option() honors normal variables).
@@ -32,7 +32,7 @@ else()
     set(GGML_CPU_ARM_ARCH "${LT_CPU_ARCH}" CACHE STRING "" FORCE)
 endif()
 
-message(STATUS "LocalTranslate: all CPU variants=${LT_CPU_ALL_VARIANTS} arch=${LT_CPU_ARCH} kleidiai=${LT_KLEIDIAI}")
+message(STATUS "NekoTranslate: all CPU variants=${LT_CPU_ALL_VARIANTS} arch=${LT_CPU_ARCH} kleidiai=${LT_KLEIDIAI}")
 
 set(LLAMA_SRC ${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/llama.cpp)
 if (NOT EXISTS ${LLAMA_SRC}/CMakeLists.txt)

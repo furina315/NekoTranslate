@@ -20,6 +20,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "LocalTranslate"
+rootProject.name = "NekoTranslate"
 include(":app")
 include(":llama")

@@ -1,8 +1,8 @@
-# LocalTranslate（暂名 Neko Translate）
+# NekoTranslate
 
-一个**完全离线**的 Android 翻译 App：用户自行导入 GGUF 翻译模型，通过 [llama.cpp](https://github.com/ggml-org/llama.cpp) 在手机 CPU 上本地推理。不申请网络权限，文本不出设备。
+**NekoTranslate** 是一个**完全离线**的 Android 翻译 App：用户自行导入 GGUF 翻译模型，通过 [llama.cpp](https://github.com/ggml-org/llama.cpp) 在手机 CPU 上本地推理。不申请网络权限，文本不出设备。
 
-> 当前阶段：**Step 0 技术验证**。只有一个测试页面（导入/加载模型 → 选语言 → 流式翻译 → 停止 → 速度统计）。
+> 当前阶段：**Step 2 UI MVP**。底部导航三个页面：**翻译**（语言选择 + 交换、输入、流式译文、复制、停止）、**模型**（导入 / 加载 / 卸载 / 删除 GGUF，按模型保存 Profile 与采样、上下文、线程参数）、**设置**（主题、动态取色、默认目标语言、屏幕常亮、关于）。
 
 ## 支持的模型
 
@@ -14,7 +14,7 @@
 
 - 推荐 **Q4_K_M**：体积、速度、质量最平衡（Index-Translate-2B ≈ 1.3 GB，Hy-MT2-1.8B ≈ 1.1 GB）。
 - ⚠️ **Hy-MT2 的 1.25bit / 2bit GGUF 无法加载**：它们依赖腾讯的 STQ 内核（[llama.cpp PR #22836](https://github.com/ggml-org/llama.cpp/pull/22836)），不在 llama.cpp 主线里。请用 Q4_K_M / Q6_K / Q8_0。
-- 导入时尽量**保留官方文件名**（如 `Index-Translate-2B.Q4_K_M.gguf`、`Hy-MT2-1.8B-Q4_K_M.gguf`）：官方 GGUF 的 `general.name` 只写了 `2b` / `1.8B`，自动匹配 Profile 主要靠文件名（`hunyuan-dense` 架构即使改名也会回退到 Hy-MT2）。匹配错了可以在界面上手动切换 Profile。
+- 导入时尽量**保留官方文件名**（如 `Index-Translate-2B.Q4_K_M.gguf`、`Hy-MT2-1.8B-Q4_K_M.gguf`）：官方 GGUF 的 `general.name` 只写了 `2b` / `1.8B`，自动匹配 Profile 主要靠文件名（`hunyuan-dense` 架构即使改名也会回退到 Hy-MT2）。匹配错了可以在「模型」页手动切换 Profile。
 - 9B / 7B 在大内存手机上能跑，但明显慢于 2B / 1.8B。
 
 ### 内置 Prompt 与采样参数
@@ -33,8 +33,9 @@
 需要：JDK 17、Android SDK（compileSdk 37）、NDK **29.0.14206865**、CMake **3.31.6**（可在 SDK Manager 安装，或让 Gradle 自动下载）。
 
 ```bash
-git clone --recursive https://github.com/furina315/LocalTranslate.git
-cd LocalTranslate
+git clone --recursive git@github.com:furina315/NekoTranslate.git
+# 或 HTTPS：git clone --recursive https://github.com/furina315/NekoTranslate.git
+cd NekoTranslate
 # 如果 clone 时没带 --recursive：
 git submodule update --init --recursive
 
@@ -50,19 +51,19 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
   - `lt.cpuAllVariants=true`（默认）：按 llama.cpp 官方 `examples/llama.android` 的做法，编出 armv8.0 → armv9.2+SME 共 7 个 `libggml-cpu-*.so`，运行时按 CPU 特性自动选最优。
   - `lt.cpuAllVariants=false` + `lt.cpuArch=armv8.6-a+dotprod+i8mm+fp16`：只编一个固定架构，APK 更小、编译更快（骁龙 8 Elite Gen 5 支持 dotprod / i8mm）。
   - `lt.kleidiai=true`：启用 Arm KleidiAI 内核。
-- GitHub Actions（`.github/workflows/android-debug.yml`）每次 push 到 main 都会跑单元测试、编 debug APK，并作为 artifact 上传（Actions 页面 → 对应运行 → Artifacts）。
+- GitHub Actions（`.github/workflows/android-debug.yml`）每次 push 到 main 都会跑单元测试、编 debug APK，并作为 artifact `NekoTranslate-debug-<commit>` 上传（Actions 页面 → 对应运行 → Artifacts）。
 
 ### 推到你自己的 GitHub 仓库
 
 如果你拿到的是打包好的源码（zip 或 git bundle）：
 
 ```bash
-# 1. 在 GitHub 网页上新建空的私有仓库 LocalTranslate（不要勾选 README / .gitignore / License）
+# 1. 在 GitHub 网页上新建空的仓库 NekoTranslate（不要勾选 README / .gitignore / License）
 # 2. 解压后进入目录
-unzip LocalTranslate.zip && cd LocalTranslate
-#   或者用 bundle：git clone LocalTranslate.bundle LocalTranslate && cd LocalTranslate
+unzip NekoTranslate.zip && cd NekoTranslate
+#   或者用 bundle：git clone NekoTranslate.bundle NekoTranslate && cd NekoTranslate
 git submodule update --init --recursive      # 拉取 llama.cpp（固定在 b11707）
-git remote add origin https://github.com/furina315/LocalTranslate.git
+git remote add origin git@github.com:furina315/NekoTranslate.git
 git push -u origin main
 ```
 
@@ -71,16 +72,19 @@ git push -u origin main
 ### 在手机上测试
 
 1. 从 Hugging Face 下载 `Index-Translate-2B.Q4_K_M.gguf` 或 `Hy-MT2-1.8B-Q4_K_M.gguf` 到手机。
-2. 打开 App →「导入 .gguf」→ 选文件（复制到 App 私有目录 `files/models`，显示进度并校验 GGUF 头）。
-3. 「加载」→ 选语言 → 输入原文 →「翻译」，可随时「停止」。下方显示加载耗时、prompt 处理速度、生成 tokens/s 和进程 RSS。
-4. `adb logcat -s LocalTranslate llama.cpp` 查看原生日志（含选中的 CPU 变体）。
+2. 打开 App →「模型」页 →「导入 .gguf」→ 选文件（复制到 App 私有目录 `files/models`，显示进度并校验 GGUF 头）。
+3. 在模型卡片上点「加载」；下方「参数」区可切换 Profile（自动匹配 / 手动 / Custom 模板）、调 temperature、top_p、top_k、重复惩罚、最大长度、上下文长度、线程数（按模型持久化，可一键恢复 Profile 默认值；改上下文 / 线程后会提示重新加载）。
+4. 回到「翻译」页 → 选语言 → 输入原文 →「翻译」，可随时「停止」，译文可一键复制。译文下方显示 tokens 数与 tok/s（可在设置里关闭）。
+5. `adb logcat -s NekoTranslate llama.cpp` 查看原生日志（含选中的 CPU 变体）。
 
 ## 架构
 
 ```
 app/      com.nekohome.translate
-  ui/       Compose Material 3 测试页（动态取色 + 深色模式）+ TranslateViewModel
+  ui/       AppRoot（Material 3 底部导航）+ MainViewModel（三个页面共享，模型跨页面保持加载）
+    translate/  翻译页        models/  模型管理 + 参数        settings/  设置 + 关于
   data/     ModelProfile / BuiltInProfiles / Language / ModelRepository（SAF 导入）
+            ModelParams（按模型的参数覆盖，DataStore 持久化）/ SettingsRepository（DataStore）
   engine/   TranslationEngine（专用单线程执行所有原生调用）、输出清洗、内存统计
 llama/    com.nekohome.translate.llama（Android library + JNI）
   src/main/cpp/CMakeLists.txt   add_subdirectory(third_party/llama.cpp)
@@ -94,9 +98,10 @@ JNI 层能力：按路径（含 `/proc/self/fd/N`）或文件描述符加载模�
 ## 路线图
 
 - [x] **Step 0 技术验证**：llama.cpp 集成、JNI、模型导入、流式翻译测试页、CI。
-- [ ] **Step 1 模型适配层**：完善 Profile（术语表 / 风格等约束翻译格式、按模型调参）、Profile 持久化与手动覆盖、上下文长度自适应。
-- [ ] **Step 2 UI MVP**：正式翻译页、模型管理页、历史记录。
-- [ ] **Step 3 系统集成**：`PROCESS_TEXT`（选中文字直接翻译）、分享菜单、长文本分段、设置页。
+- [ ] **Step 1 模型适配层**：完善 Profile（术语表 / 风格等约束翻译格式）、上下文长度自适应。（按模型调参、Profile 持久化与手动覆盖已完成）
+- [x] **Step 2 UI MVP**：底部导航（翻译 / 模型 / 设置）、正式翻译页、模型管理页、设置页。
+- [ ] 历史记录。
+- [ ] **Step 3 系统集成**：`PROCESS_TEXT`（选中文字直接翻译）、分享菜单、长文本分段。
 
 ## License
 
@@ -106,8 +111,10 @@ Apache-2.0（见 `LICENSE`）。llama.cpp 为 MIT License。模型权重遵循�
 
 ## English summary
 
-**LocalTranslate** (placeholder name *Neko Translate*) is a fully offline Android translator. Users import GGUF translation models, which run on-device through llama.cpp (CPU backend, arm64-v8a, minSdk 29). Built-in profiles cover **Index-Translate 2B/9B** (Qwen3.5) and **Hy-MT2 1.8B/7B** (Hunyuan dense) with the official prompt formats and sampling settings; a *Custom* profile accepts any template with `{source_lang}`, `{target_lang}`, `{text}`. Q4_K_M is recommended. Hy-MT2's 1.25-bit/2-bit GGUFs need the non-mainline STQ kernel and will not load.
+**NekoTranslate** is a fully offline Android translator. Users import GGUF translation models, which run on-device through llama.cpp (CPU backend, arm64-v8a, minSdk 29). Built-in profiles cover **Index-Translate 2B/9B** (Qwen3.5) and **Hy-MT2 1.8B/7B** (Hunyuan dense) with the official prompt formats and sampling settings; a *Custom* profile accepts any template with `{source_lang}`, `{target_lang}`, `{text}`. Q4_K_M is recommended. Hy-MT2's 1.25-bit/2-bit GGUFs need the non-mainline STQ kernel and will not load.
 
-Build: `git clone --recursive`, then `./gradlew :app:assembleDebug` (JDK 17, NDK 29.0.14206865, CMake 3.31.6). CI builds a debug APK on every push to `main` and uploads it as an artifact. To publish a packaged copy: create an empty GitHub repo, `git submodule update --init --recursive`, `git remote add origin …`, `git push -u origin main`.
+Build: `git clone --recursive https://github.com/furina315/NekoTranslate.git`, then `./gradlew :app:assembleDebug` (JDK 17, NDK 29.0.14206865, CMake 3.31.6). CI builds a debug APK on every push to `main` and uploads it as the `NekoTranslate-debug-<sha>` artifact. To publish a packaged copy: create an empty GitHub repo, `git submodule update --init --recursive`, `git remote add origin …`, `git push -u origin main`.
 
-Roadmap: step 0 tech validation (this) → step 1 model adapter layer → step 2 UI MVP (translate page, model manager, history) → step 3 PROCESS_TEXT / share / long-text chunking / settings.
+The UI has three bottom-navigation tabs: Translate (language pickers with swap, input, streaming output, copy, stop), Models (import / load / unload / delete GGUFs and per-model profile, sampling, context and thread settings persisted with DataStore), and Settings (theme, dynamic color, default target language, keep screen on, about).
+
+Roadmap: step 0 tech validation ✓ → step 2 UI MVP ✓ → step 1 constrained-translation prompts, history → step 3 PROCESS_TEXT / share / long-text chunking.
