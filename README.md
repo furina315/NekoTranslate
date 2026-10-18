@@ -28,7 +28,12 @@
 
 为什么不直接用 GGUF 自带的 chat template：`llama_chat_apply_template` 不执行 Jinja，只按特征识别模板。实测（llama.cpp b11707）它把 Index-Translate 的 Qwen3.5 模板渲染成**不带空 think 块**的 ChatML，把 Hy-MT2 模板误判成 HunyuanVL（渲染成 `<bos>{内容}<｜hy_User｜>`）。所以内置 Profile 使用从官方 Jinja 模板转写的固定包装；Custom Profile 才走 GGUF 模板。
 
-## 构建
+## 下载与构建
+
+- **下载**：到 [Releases](https://github.com/furina315/NekoTranslate/releases) 页面下载 APK，每个版本有三个：`NekoTranslate-<版本>-arm64-v8a.apk`（**推荐**，64 位手机）、`-armeabi-v7a.apk`（只支持 32 位的老设备）、`-universal.apk`（两种都含，体积更大）。
+- **发版**：打 `v*` tag 并推送，CI 自动编译并发布 Release（tag 带 `-` 如 `v0.2.0-beta1` 会标记为预发布）：`git tag v0.2.0 && git push origin v0.2.0`。发版前先把 `app/build.gradle.kts` 里的 `versionCode` 加一（版本名取自 tag）。也可以在 Actions →「Release APKs」→ Run workflow 手动构建，结果发布到预发布 `nightly`（每次手动运行覆盖）。
+- **armeabi-v7a 的限制**：32 位进程只有约 3 GB 地址空间，只建议用 ≤2B 的 Q4_K_M 模型（约 1.1–1.3 GB）；7B / 9B 基本无法加载。v7a 只有一个 NEON 版 CPU 后端（没有 dotprod / i8mm 变体和 KleidiAI），速度明显慢于 v8a。
+
 
 需要：JDK 17、Android SDK（compileSdk 37）、NDK **29.0.14206865**、CMake **3.31.6**（可在 SDK Manager 安装，或让 Gradle 自动下载）。
 
@@ -40,14 +45,15 @@ cd NekoTranslate
 git submodule update --init --recursive
 
 ./gradlew :app:assembleRelease
-# 产物：app/build/outputs/apk/release/app-release.apk（日常使用/测流畅度请装这个）
-adb install -r app/build/outputs/apk/release/app-release.apk
+# 产物：app/build/outputs/apk/release/app-{arm64-v8a,armeabi-v7a,universal}-release.apk（日常使用/测流畅度请装这个）
+adb install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
+# 只编 arm64-v8a（更快）：./gradlew :app:assembleRelease -Plt.abis=arm64-v8a
 
 # 调试版（未混淆，Compose 明显更卡，只用于调试）：
-./gradlew :app:assembleDebug   # → app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug   # → app/build/outputs/apk/debug/app-<abi>-debug.apk
 ```
 
-- 只编 `arm64-v8a`，minSdk 29（Android 10）。
+- 编 `arm64-v8a` 和 `armeabi-v7a`（ABI split + universal），minSdk 29（Android 10）。versionCode = 基础值 × 10 + ABI（universal 0、v7a 1、v8a 2）。
 - 原生代码**始终以 Release 编译**（debug APK 也是），否则 llama.cpp 会慢十倍以上。
 - CMake 配置时会通过 FetchContent 下载 KleidiAI（需要网络）。
 - `gradle.properties` 开关：
@@ -58,7 +64,7 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 - ⚠️ **release 目前用 debug keystore 签名**（`signingConfig = signingConfigs.getByName("debug")`），这样 CI 产物可以直接安装。它**不能用于发布**：正式发布前要换成自己的 release keystore（换签名后需要先卸载旧版再装）。release 的包名是 `com.nekohome.translate`，debug 是 `com.nekohome.translate.debug`，两者可以同时安装（模型需要各自导入）。
 - JNI 混淆规则在 `llama/consumer-rules.pro`（保留 `LlamaNative` 的 native 方法，以及 C++ 通过 `GetMethodID("onToken")` 回调的 `TokenCallback` 及其所有实现）。
 - Compose 稳定性配置：`app/compose-stability.conf`（把只读集合、`File`、`:llama` 模块的数据类标为 stable，让列表卡片等在无变化时跳过重组）。
-- GitHub Actions（`.github/workflows/android-debug.yml`）每次 push 到 main 都会跑单元测试、同时编 debug 和 release APK，作为 artifact 上传（Actions 页面 → 对应运行 → Artifacts）：**`NekoTranslate-release-<commit>`（推荐安装）**、`NekoTranslate-debug-<commit>`，以及 R8 mapping（`NekoTranslate-release-mapping-<commit>`，用于还原崩溃堆栈）。
+- GitHub Actions：`.github/workflows/ci.yml` 在每次 push / PR 到 main 时只编译 Kotlin 并跑 JVM 单元测试（`-Plt.skipNative=true`，不编原生库、不出 APK）；`.github/workflows/release.yml` 在推送 `v*` tag 或手动运行时编三个 release APK，连同 R8 mapping（`NekoTranslate-<版本>-mapping.txt`，用于还原崩溃堆栈）发布到 GitHub Release。
 
 ### 推到你自己的 GitHub 仓库
 
@@ -74,7 +80,7 @@ git remote add origin git@github.com:furina315/NekoTranslate.git
 git push -u origin main
 ```
 
-推上去之后 Actions 会自动开始构建 APK。
+推上去之后 Actions 会自动跑单元测试；要出 APK 请推 `v*` tag 或手动运行「Release APKs」。
 
 ### 在手机上测试
 

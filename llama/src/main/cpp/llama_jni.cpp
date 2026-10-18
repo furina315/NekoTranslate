@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -61,7 +62,8 @@ void log_cb(ggml_log_level level, const char * text, void * /*user*/) {
     __android_log_write(prio, "llama.cpp", text);
 }
 
-Session * as_session(jlong handle) { return reinterpret_cast<Session *>(handle); }
+// jlong is 64-bit on every ABI; go through intptr_t so 32-bit (armeabi-v7a) builds stay exact.
+Session * as_session(jlong handle) { return reinterpret_cast<Session *>(static_cast<intptr_t>(handle)); }
 
 // ------------------------------------------------------------------------------------------------
 // UTF-8 helpers
@@ -243,7 +245,7 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeLoad(
     }
     session->ctx = ctx;
     LOGI("Model loaded: n_ctx=%u threads=%d batch=%d", llama_n_ctx(ctx), cparams.n_threads, cparams.n_batch);
-    return reinterpret_cast<jlong>(session);
+    return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
 }
 
 JNIEXPORT void JNICALL

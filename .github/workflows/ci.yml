@@ -1,0 +1,68 @@
+name: CI (unit tests)
+
+# Every push / PR to main: compile the Kotlin code and run the JVM unit tests. No NDK, no CMake,
+# no APK (-Plt.skipNative=true removes :llama's externalNativeBuild), so it finishes in a few minutes.
+# APKs are built by release.yml (push a v* tag, or run it manually).
+on:
+  push:
+    branches: [ main ]
+    # Docs-only changes skip CI. Add [skip ci] to a commit message to skip any push.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/ISSUE_TEMPLATE/**'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/ISSUE_TEMPLATE/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # No submodules: llama.cpp is only needed for the native build.
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install SDK platform
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compile + JVM unit tests
+        run: ./gradlew --no-daemon -Plt.skipNative=true :llama:testDebugUnitTest :app:testDebugUnitTest
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.sha }}
+          path: '*/build/reports/tests/'
+          if-no-files-found: ignore

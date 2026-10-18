@@ -5,6 +5,12 @@ plugins {
 val cpuAllVariants = (findProperty("lt.cpuAllVariants") as String?)?.toBoolean() ?: true
 val cpuArch = (findProperty("lt.cpuArch") as String?) ?: "armv8.6-a+dotprod+i8mm+fp16"
 val kleidiai = (findProperty("lt.kleidiai") as String?)?.toBoolean() ?: true
+// Same ABI list as :app (see app/build.gradle.kts).
+val abis = ((findProperty("lt.abis") as String?) ?: "armeabi-v7a,arm64-v8a")
+    .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+// -Plt.skipNative=true: no CMake/NDK at all (JVM unit tests and compile checks in CI). Any APK
+// built this way has no native libraries and cannot load models.
+val skipNative = (findProperty("lt.skipNative") as String?)?.toBoolean() ?: false
 
 android {
     namespace = "com.nekohome.translate.llama"
@@ -16,7 +22,7 @@ android {
         consumerProguardFiles("consumer-rules.pro")
 
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += abis
         }
         externalNativeBuild {
             cmake {
@@ -38,15 +44,19 @@ android {
                 arguments += "-DGGML_OPENCL=OFF"
                 arguments += "-DLT_CPU_ALL_VARIANTS=${if (cpuAllVariants) "ON" else "OFF"}"
                 arguments += "-DLT_CPU_ARCH=$cpuArch"
+                // KleidiAI and the multi-variant CPU backend apply to arm64-v8a only; CMakeLists.txt
+                // switches armeabi-v7a to a single NEON (vfpv4) backend by itself.
                 arguments += "-DLT_KLEIDIAI=${if (kleidiai) "ON" else "OFF"}"
             }
         }
     }
 
-    externalNativeBuild {
-        cmake {
-            path("src/main/cpp/CMakeLists.txt")
-            version = "3.31.6"
+    if (!skipNative) {
+        externalNativeBuild {
+            cmake {
+                path("src/main/cpp/CMakeLists.txt")
+                version = "3.31.6"
+            }
         }
     }
 

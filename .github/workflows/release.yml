@@ -1,0 +1,153 @@
+name: Release APKs
+
+# Full native + R8 release build: three APKs (armeabi-v7a, arm64-v8a, universal) plus the R8
+# mapping, published as plain files on a GitHub Release.
+#
+#   git tag v0.2.0 && git push origin v0.2.0              -> Release "v0.2.0"
+#   git tag v0.2.0-beta1 && git push origin v0.2.0-beta1  -> same, marked pre-release (tag has '-')
+#   Actions -> "Release APKs" -> Run workflow (branch main) -> pre-release "nightly", deleted and
+#     re-created on every manual run so it always points at the commit just built. Choosing a v*
+#     tag in "Use workflow from" instead rebuilds that tag and replaces its release files.
+#
+# Release APKs are signed with the runner's debug keystore (see app/build.gradle.kts): they install
+# directly but cannot be updated in place by a properly signed build later.
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: "29.0.14206865"
+  CMAKE_VERSION: "3.31.6"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout (with llama.cpp submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Work out release name
+        id: meta
+        run: |
+          short=$(git rev-parse --short HEAD)
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            case "$tag" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          else
+            tag="nightly"
+            base=$(sed -nE 's/.*versionName = .*\?: "([0-9][^"]*)".*/\1/p' app/build.gradle.kts | head -1)
+            version="${base:-0.0.0}-nightly-${short}"
+            prerelease=true
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "short=$short"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release $tag, version $version, prerelease=$prerelease"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install SDK platform, NDK and CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests (JVM)
+        run: ./gradlew --no-daemon -Plt.skipNative=true :llama:testDebugUnitTest :app:testDebugUnitTest
+
+      # Release = R8-minified + baseline profiles. Native code is -O3 in every variant.
+      - name: Build release APKs (armeabi-v7a, arm64-v8a, universal)
+        run: ./gradlew --no-daemon "-Plt.versionName=${{ steps.meta.outputs.version }}" :app:assembleRelease
+
+      - name: Collect and check release files
+        run: |
+          set -eu
+          v="${{ steps.meta.outputs.version }}"
+          out=app/build/outputs/apk/release
+          cat "$out/output-metadata.json"
+          mkdir -p dist
+          for abi in armeabi-v7a arm64-v8a universal; do
+            cp "$(ls "$out"/*-"$abi"-release.apk)" "dist/NekoTranslate-$v-$abi.apk"
+            unzip -l "dist/NekoTranslate-$v-$abi.apk" > "list-$abi.txt"
+            echo "== NekoTranslate-$v-$abi.apk ($(du -h "dist/NekoTranslate-$v-$abi.apk" | cut -f1))"
+            grep -E '\.so$' "list-$abi.txt" || true
+          done
+          cp app/build/outputs/mapping/release/mapping.txt "dist/NekoTranslate-$v-mapping.txt"
+          # Each split carries only its own ABI; the universal APK carries both.
+          has() { grep -q "lib/$2/libllama.so" "list-$1.txt"; }
+          fail() { echo "::error::$1"; exit 1; }
+          has armeabi-v7a armeabi-v7a || fail "v7a APK lacks armeabi-v7a libs"
+          has armeabi-v7a arm64-v8a   && fail "v7a APK contains arm64-v8a libs"
+          has arm64-v8a   arm64-v8a   || fail "v8a APK lacks arm64-v8a libs"
+          has arm64-v8a   armeabi-v7a && fail "v8a APK contains armeabi-v7a libs"
+          has universal   armeabi-v7a || fail "universal APK lacks armeabi-v7a libs"
+          has universal   arm64-v8a   || fail "universal APK lacks arm64-v8a libs"
+          ls -la dist
+
+      - name: Write release notes
+        run: |
+          v="${{ steps.meta.outputs.version }}"
+          llama=$(sed -nE 's/.*LLAMA_CPP_VERSION", "\\"([^\\]*)\\"".*/\1/p' app/build.gradle.kts | head -1)
+          {
+            echo "**NekoTranslate $v**（commit ${{ steps.meta.outputs.short }}，llama.cpp ${llama:-?}）"
+            echo
+            echo "| 文件 | 适用设备 |"
+            echo "|---|---|"
+            echo "| \`NekoTranslate-$v-arm64-v8a.apk\` | **推荐**：64 位手机（近几年的手机基本都是） |"
+            echo "| \`NekoTranslate-$v-armeabi-v7a.apk\` | 只支持 32 位的老设备；建议只用 ≤2B 的 Q4 模型 |"
+            echo "| \`NekoTranslate-$v-universal.apk\` | 同时包含两种，不确定选哪个时用（体积更大） |"
+            echo "| \`NekoTranslate-$v-mapping.txt\` | R8 mapping，用于还原崩溃堆栈，普通用户不用下载 |"
+            echo
+            echo "⚠️ 使用 CI 的 debug keystore 签名：可直接安装，但以后换正式签名时需要先卸载旧版。"
+          } > notes.md
+          if [ "${{ steps.meta.outputs.tag }}" = "nightly" ]; then
+            printf '\n手动触发的测试构建，每次手动运行都会被覆盖。\n' >> notes.md
+          fi
+          cat notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="${{ steps.meta.outputs.tag }}"
+          pre=""
+          if [ "${{ steps.meta.outputs.prerelease }}" = "true" ]; then pre="--prerelease"; fi
+          if [ "$tag" = "nightly" ]; then
+            # Re-create so the nightly tag moves to the commit that was just built.
+            gh release delete nightly --cleanup-tag --yes || true
+            gh release create nightly dist/* --target "$GITHUB_SHA" $pre \
+              --title "Nightly (${{ steps.meta.outputs.short }})" --notes-file notes.md
+          elif gh release view "$tag" > /dev/null 2>&1; then
+            # Re-run for an existing tag: replace the files, keep the release.
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --verify-tag $pre \
+              --title "NekoTranslate $tag" --notes-file notes.md
+          fi

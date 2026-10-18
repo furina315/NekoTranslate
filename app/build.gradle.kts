@@ -1,7 +1,20 @@
+import com.android.build.api.variant.FilterConfiguration
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// ABIs to package (comma separated). Default builds all supported ones; e.g.
+// `./gradlew :app:assembleRelease -Plt.abis=arm64-v8a` for a faster local build.
+val supportedAbis = listOf("armeabi-v7a", "arm64-v8a")
+val abis = ((findProperty("lt.abis") as String?) ?: supportedAbis.joinToString(","))
+    .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+require(abis.isNotEmpty() && supportedAbis.containsAll(abis)) { "lt.abis must be a subset of $supportedAbis, got $abis" }
+
+// Per-ABI versionCode = defaultConfig.versionCode * 10 + this. Universal keeps +0 (lowest), so an
+// ABI-specific APK always wins over the universal one for the same release.
+val abiVersionCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2)
 
 android {
     namespace = "com.nekohome.translate"
@@ -12,14 +25,22 @@ android {
         applicationId = "com.nekohome.translate"
         minSdk = 29
         targetSdk = 37
+        // Bump versionCode for every release (it is multiplied per ABI, see abiVersionCodes).
         versionCode = 1
-        versionName = "0.1.0"
+        // CI release builds pass -Plt.versionName=<tag without leading v>.
+        versionName = (findProperty("lt.versionName") as String?) ?: "0.1.0"
 
         // Shown in 设置 → 关于; keep in sync with the third_party/llama.cpp submodule tag.
         buildConfigField("String", "LLAMA_CPP_VERSION", "\"b11707\"")
+    }
 
-        ndk {
-            abiFilters += listOf("arm64-v8a")
+    // One APK per ABI plus a universal one (all ABIs). Native libs come from :llama.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include(*abis.toTypedArray())
+            isUniversalApk = true
         }
     }
 
@@ -58,6 +79,16 @@ android {
             // ggml CPU backend variants are dlopen'ed by path from nativeLibraryDir,
             // so native libs must be extracted at install time.
             useLegacyPackaging = true
+        }
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            val abi = output.filters.find { it.filterType == FilterConfiguration.FilterType.ABI }?.identifier
+            val base = output.versionCode.orNull ?: 1
+            output.versionCode.set(base * 10 + (abi?.let { abiVersionCodes.getValue(it) } ?: 0))
         }
     }
 }
