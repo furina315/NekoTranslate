@@ -150,12 +150,11 @@ jobs:
             echo
             echo "| 文件 | 适用设备 |"
             echo "|---|---|"
-            echo "| \`NekoTranslate-$v-arm64-v8a.apk\` | **推荐**：64 位手机（近几年的手机基本都是） |"
-            echo "| \`NekoTranslate-$v-armeabi-v7a.apk\` | 只支持 32 位的老设备；建议只用 ≤2B 的 Q4 模型 |"
-            echo "| \`NekoTranslate-$v-universal.apk\` | 同时包含两种，不确定选哪个时用（体积更大） |"
-            echo "| \`NekoTranslate-$v-mapping.txt\` | R8 mapping，用于还原崩溃堆栈，普通用户不用下载 |"
+            echo "| \`NekoTranslate-$v-arm64-v8a.apk\` | **推荐**：64位版本，近几年的设备基本都是 |"
+            echo "| \`NekoTranslate-$v-armeabi-v7a.apk\` | 只支持32位的老设备，建议只用≤2B的Q4模型 |"
+            echo "| \`NekoTranslate-$v-universal.apk\` | 通用版本，体积更大 |"
+            echo "| \`NekoTranslate-$v-mapping.txt\` | R8 mapping，用于还原崩溃堆栈，普通用户无需下载 |"
             echo
-            echo "⚠️ 使用 CI 的 debug keystore 签名：可直接安装，但以后换正式签名时需要先卸载旧版。"
           } > notes.md
           if [ "${{ steps.meta.outputs.tag }}" = "nightly" ]; then
             printf '\n手动触发的测试构建，每次手动运行都会被覆盖。\n' >> notes.md
