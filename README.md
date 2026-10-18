@@ -113,15 +113,3 @@ JNI 层能力：按路径（含 `/proc/self/fd/N`）或文件描述符加载模�
 ## License
 
 Apache-2.0（见 `LICENSE`）。llama.cpp 为 MIT License。模型权重遵循各自许可证。
-
----
-
-## English summary
-
-**NekoTranslate** is a fully offline Android translator. Users import GGUF translation models, which run on-device through llama.cpp (CPU backend, arm64-v8a, minSdk 29). Built-in profiles cover **Index-Translate 2B/9B** (Qwen3.5) and **Hy-MT2 1.8B/7B** (Hunyuan dense) with the official prompt formats and sampling settings; a *Custom* profile accepts any template with `{source_lang}`, `{target_lang}`, `{text}`. Q4_K_M is recommended. Hy-MT2's 1.25-bit/2-bit GGUFs need the non-mainline STQ kernel and will not load.
-
-Build: `git clone --recursive https://github.com/furina315/NekoTranslate.git`, then `./gradlew :app:assembleRelease` (JDK 17, NDK 29.0.14206865, CMake 3.31.6). CI builds debug and release APKs on every push to `main` and uploads them as the `NekoTranslate-release-<sha>` (R8-minified, baseline profiles; install this one) and `NekoTranslate-debug-<sha>` artifacts. The release build is currently signed with the debug keystore so it is directly installable; switch to a real keystore before publishing. To publish a packaged copy: create an empty GitHub repo, `git submodule update --init --recursive`, `git remote add origin …`, `git push -u origin main`.
-
-The UI has three bottom-navigation tabs: Translate (language pickers with swap, input, streaming output, copy, stop), Models (import / load / unload / delete GGUFs and per-model profile, sampling, context and thread settings persisted with DataStore), and Settings (theme, dynamic color, default target language, keep screen on, about).
-
-Roadmap: step 0 tech validation ✓ → step 2 UI MVP ✓ → step 1 constrained-translation prompts, history → step 3 PROCESS_TEXT / share / long-text chunking.

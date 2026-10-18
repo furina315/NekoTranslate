@@ -3,7 +3,19 @@ name: Android APKs (debug + release)
 on:
   push:
     branches: [ main ]
+    # Docs-only changes don't need an APK. Add [skip ci] to a commit message to skip any push.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 concurrency:
