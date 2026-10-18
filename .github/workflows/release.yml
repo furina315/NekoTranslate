@@ -16,8 +16,9 @@ name: Release APKs
 # Note: GitHub skips tag pushes too when the tagged commit's message contains a skip-ci marker,
 # so do not tag such a commit (or use the manual run instead).
 #
-# Release APKs are signed with the runner's debug keystore (see app/build.gradle.kts): they install
-# directly but cannot be updated in place by a properly signed build later.
+# Signing: repository secrets RELEASE_KEYSTORE_BASE64, RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS,
+# RELEASE_KEY_PASSWORD. Tag builds fail without them (a debug-signed release could never be updated);
+# a manual nightly falls back to the runner's throwaway debug key with a warning.
 on:
   push:
     tags: [ 'v*' ]
@@ -106,8 +107,27 @@ jobs:
       - name: Unit tests (JVM)
         run: ./gradlew --no-daemon -Plt.skipNative=true :llama:testDebugUnitTest :app:testDebugUnitTest
 
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "LT_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "Release keystore decoded."
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "::error::RELEASE_KEYSTORE_BASE64 secret is missing; refusing to publish a debug-signed release."
+            exit 1
+          else
+            echo "::warning::No release keystore secret; nightly is signed with a throwaway debug key."
+          fi
+
       # Release = R8-minified + baseline profiles. Native code is -O3 in every variant.
       - name: Build release APKs (armeabi-v7a, arm64-v8a, universal)
+        env:
+          LT_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          LT_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          LT_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: ./gradlew --no-daemon "-Plt.versionName=${{ steps.meta.outputs.version }}" "-Plt.versionCode=${{ steps.meta.outputs.code }}" :app:assembleRelease
 
       - name: Collect and check release files

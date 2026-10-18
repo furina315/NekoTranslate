@@ -45,6 +45,20 @@ android {
         }
     }
 
+    // Release keystore comes from the environment (CI: GitHub Secrets, decoded in release.yml;
+    // locally: export the same four variables). Without it, release falls back to the debug key.
+    val releaseKeystore = System.getenv("LT_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.isFile }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("LT_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("LT_KEY_ALIAS")
+                keyPassword = System.getenv("LT_KEY_PASSWORD") ?: System.getenv("LT_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -58,10 +72,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // TEMPORARY: signed with the local debug keystore so the CI release APK installs
-            // directly (adb install / file manager). Replace with a real release keystore before
-            // publishing anywhere; an APK signed this way cannot be updated by a properly signed one.
-            signingConfig = signingConfigs.getByName("debug")
+            // Real release key when LT_KEYSTORE_FILE is set; otherwise the debug key (local builds only).
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
