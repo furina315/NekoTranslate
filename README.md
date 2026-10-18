@@ -1,4 +1,5 @@
-![Logo](docs/images/logo.png)
+<img src="docs/images/logo.png" width="400">
+
 # NekoTranslate
 
 **NekoTranslate** 是一个**完全离线**的 Android 翻译 App：用户自行导入 GGUF 翻译模型，通过 [llama.cpp](https://github.com/ggml-org/llama.cpp) 在手机 CPU 上本地推理。不申请网络权限，数据本地化。
