@@ -31,7 +31,7 @@
 ## 下载与构建
 
 - **下载**：到 [Releases](https://github.com/furina315/NekoTranslate/releases) 页面下载 APK，每个版本有三个：`NekoTranslate-<版本>-arm64-v8a.apk`（**推荐**，64 位手机）、`-armeabi-v7a.apk`（只支持 32 位的老设备）、`-universal.apk`（两种都含，体积更大）。
-- **发版**：打 `v*` tag 并推送，CI 自动编译并发布 Release（tag 带 `-` 如 `v0.2.0-beta1` 会标记为预发布）：`git tag v0.2.0 && git push origin v0.2.0`。发版前先把 `app/build.gradle.kts` 里的 `versionCode` 加一（版本名取自 tag）。也可以在 Actions →「Release APKs」→ Run workflow 手动构建，结果发布到预发布 `nightly`（每次手动运行覆盖）。
+- **发版**：打 `v*` tag 并推送，CI 自动编译并发布 Release（tag 带 `-` 如 `v0.2.0-beta1` 会标记为预发布）：`git tag -a v0.2.0 -m "更新说明" && git push origin v0.2.0`。tag 说明会放在 Release 正文顶部，后面附自动生成的提交列表；版本名和 versionCode 都由 tag 算出（vX.Y.Z → X×10000 + Y×100 + Z），无需手动修改。也可以在 Actions →「Release APKs」→ Run workflow 手动构建，结果发布到预发布 `nightly`（每次手动运行覆盖）。
 - **armeabi-v7a 的限制**：32 位进程只有约 3 GB 地址空间，只建议用 ≤2B 的 Q4_K_M 模型（约 1.1–1.3 GB）；7B / 9B 基本无法加载。v7a 只有一个 NEON 版 CPU 后端（没有 dotprod / i8mm 变体和 KleidiAI），速度明显慢于 v8a。
 
 
@@ -53,7 +53,7 @@ adb install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
 ./gradlew :app:assembleDebug   # → app/build/outputs/apk/debug/app-<abi>-debug.apk
 ```
 
-- 编 `arm64-v8a` 和 `armeabi-v7a`（ABI split + universal），minSdk 29（Android 10）。versionCode = 基础值 × 10 + ABI（universal 0、v7a 1、v8a 2）。
+- 编 `arm64-v8a` 和 `armeabi-v7a`（ABI split + universal），minSdk 29（Android 10）。versionCode = tag 算出的基础值 × 10 + ABI（universal 0、v7a 1、v8a 2）。
 - 原生代码**始终以 Release 编译**（debug APK 也是），否则 llama.cpp 会慢十倍以上。
 - CMake 配置时会通过 FetchContent 下载 KleidiAI（需要网络）。
 - `gradle.properties` 开关：

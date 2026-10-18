@@ -25,8 +25,9 @@ android {
         applicationId = "com.nekohome.translate"
         minSdk = 29
         targetSdk = 37
-        // Bump versionCode for every release (it is multiplied per ABI, see abiVersionCodes).
-        versionCode = 1
+        // CI release builds pass -Plt.versionCode computed from the tag (vX.Y.Z -> X*10000 + Y*100 + Z),
+        // so there is nothing to bump by hand. It is then multiplied per ABI, see abiVersionCodes.
+        versionCode = (findProperty("lt.versionCode") as String?)?.toInt() ?: 1
         // CI release builds pass -Plt.versionName=<tag without leading v>.
         versionName = (findProperty("lt.versionName") as String?) ?: "0.1.0"
 
