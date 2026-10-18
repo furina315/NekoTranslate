@@ -69,7 +69,7 @@ adb install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
 # 只编 arm64-v8a（更快）
 ./gradlew :app:assembleRelease -Plt.abis=arm64-v8a
 
-# 调试版（未混淆，Compose 明显更卡，仅用于调试）
+# 调试版（未混淆，仅用于调试）
 ./gradlew :app:assembleDebug
 ```
 
@@ -86,20 +86,6 @@ adb install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
 | `lt.cpuAllVariants=true`（默认） | 编出 armv8.0 ~ armv9.2+SME 共 7 个 `libggml-cpu-*.so`，运行时按 CPU 特性自动选最优 |
 | `lt.cpuAllVariants=false`<br>`lt.cpuArch=armv8.6-a+dotprod+i8mm+fp16` | 只编一个固定架构，APK 更小、编译更快 |
 | `lt.kleidiai=true` | 启用 Arm KleidiAI 内核 |
-
-#### Release 与 Debug
-
-| | Release | Debug |
-|---|---|---|
-| 包名 | `com.nekohome.translate` | `com.nekohome.translate.debug` |
-| 混淆 / 资源压缩 | R8 开启 | 无 |
-| Compose 性能 | 带 baseline profile，安装后 AOT 编译 | 未优化，动画明显掉帧 |
-| 用途 | 日常使用、测流畅度 | 仅调试 |
-
-两者包名不同，可同时安装（模型需各自导入）。
-
-> [!WARNING]
-> Release 目前使用 **debug keystore** 签名，方便 CI 产物直接安装，但**不能用于正式发布**。正式发布前请换成自己的 keystore，换签名后需先卸载旧版。
 
 <details>
 <summary>更多构建细节</summary>
@@ -165,6 +151,10 @@ third_party/llama.cpp             git submodule，固定在 b11707
 - **流式生成**：支持 temperature / top_p / top_k / min_p / 重复惩罚，以 UTF-8 字节回调（emoji 安全）
 - **控制**：随时取消、卸载
 - **性能统计**：返回 prompt 处理耗时与生成速度
+
+## AI 内容声明
+本软件由[**Hark Pro**](https://hark.com/)和[**Claude**](https://claude.ai)**辅助开发** <br>
+本软件**图标**以及**README头图**由`OpenAI GPT Images 2.5`生成
 
 ## License
 
