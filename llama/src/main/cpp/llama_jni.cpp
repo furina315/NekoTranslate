@@ -1,7 +1,8 @@
 // NekoTranslate JNI bridge for llama.cpp.
 //
-// Only the public C API in llama.h is used (no common/ helpers), so this file keeps compiling across
-// llama.cpp updates as long as llama.h stays source compatible.
+// Only the public C APIs in llama.h and tools/mtmd (mtmd.h, mtmd-helper.h) are used (no common/
+// helpers), so this file keeps compiling across llama.cpp updates as long as those stay source
+// compatible. mtmd provides image input through a vision projector (mmproj GGUF).
 //
 // Threading: every call except nativeCancel() must come from the same thread (the Kotlin side runs
 // all of them on one dedicated engine thread). nativeCancel() only flips an atomic flag.
@@ -25,6 +26,8 @@
 
 #include "llama.h"
 #include "ggml-backend.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
 
 #define TAG "NekoTranslate"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -40,11 +43,29 @@ namespace {
 struct Session {
     llama_model   * model = nullptr;
     llama_context * ctx   = nullptr;
+    mtmd_context  * mtmd  = nullptr;   // vision projector, loaded on demand (nativeMmprojLoad)
     std::atomic<bool> cancel{false};
     int32_t n_batch = 512;
+    uint32_t eval_nodes = 0;           // node counter for mtmd_eval_cb (engine thread only)
 };
 
 bool g_backend_ready = false;
+bool g_mtmd_log_ready = false;
+
+// ggml_backend_sched eval callback installed on the mtmd (vision encoder) scheduler. The CLIP
+// encoder has no abort callback, so this is how a stop request interrupts a running image
+// encode: ggml asks `ask == true` per graph node whether we want to observe it; saying yes makes
+// the scheduler compute up to that node, synchronize and call us again with `ask == false`, where
+// returning false aborts the rest of the graph. We only ask for every 32nd node (so the encoder
+// still runs in large multi-threaded chunks), or immediately once cancel is set. The encoder
+// then returns a partially computed result, which the caller discards after checking `cancel`.
+bool mtmd_eval_cb(struct ggml_tensor * /*t*/, bool ask, void * data) {
+    auto * s = static_cast<Session *>(data);
+    if (s == nullptr) return ask ? false : true;
+    const bool cancelled = s->cancel.load(std::memory_order_relaxed);
+    if (ask) return cancelled || ((++s->eval_nodes & 31u) == 0);
+    return !cancelled;
+}
 
 bool abort_cb(void * data) {
     auto * s = static_cast<Session *>(data);
@@ -143,6 +164,112 @@ std::string token_to_piece(const llama_vocab * vocab, llama_token tok) {
 double now_ms() {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
+jdoubleArray make_result(JNIEnv * env, double status, double n_prompt, double prompt_ms,
+                         double n_gen, double gen_ms, double reason) {
+    jdoubleArray arr = env->NewDoubleArray(6);
+    const jdouble v[6] = {status, n_prompt, prompt_ms, n_gen, gen_ms, reason};
+    env->SetDoubleArrayRegion(arr, 0, 6, v);
+    return arr;
+}
+
+// Sampler chain: penalties -> top-k -> top-p -> min-p -> temperature -> dist (or greedy).
+llama_sampler * make_sampler(const llama_vocab * vocab, float temperature, float top_p, int top_k, float min_p,
+                             float repeat_penalty, int repeat_last_n, int seed) {
+    llama_sampler_chain_params sp = llama_sampler_chain_default_params();
+    sp.no_perf = true;
+    llama_sampler * smpl = llama_sampler_chain_init(sp);
+    if (repeat_penalty > 0.0f && repeat_penalty != 1.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_penalties(
+                llama_vocab_n_tokens(vocab), repeat_last_n, repeat_penalty, 0.0f, 0.0f));
+    }
+    if (temperature <= 0.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    } else {
+        if (top_k > 0)                    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
+        if (top_p > 0.0f && top_p < 1.0f) llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+        if (min_p > 0.0f)                 llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : static_cast<uint32_t>(seed)));
+    }
+    return smpl;
+}
+
+struct GenResult {
+    double status = 0;   // 0 ok, 1 cancelled, -4 decode failed
+    double reason = 1;   // see nativeGenerate
+    int    n_gen  = 0;
+    double gen_ms = 0;
+};
+
+// Token generation after the prompt has been evaluated (logits of the last prompt position are
+// available). `n_used` is the number of KV cells already occupied, for the context-full check.
+// Each new token is decoded with llama_batch_get_one(), whose position llama.cpp assigns as
+// "last position in the KV cache + 1"; that is also right after an image under M-RoPE, because the
+// prompt always ends with a text chunk whose positions mtmd set explicitly.
+// Streams UTF-8 chunks to callback.onToken(byte[]): boolean (return false to stop).
+GenResult generate_loop(JNIEnv * env, Session * s, llama_sampler * smpl, jobject callback, jmethodID on_token,
+                        int n_used, int max_tokens) {
+    const llama_vocab * vocab = llama_model_get_vocab(s->model);
+    const int n_ctx = static_cast<int>(llama_n_ctx(s->ctx));
+    GenResult r;
+    const double t_gen0 = now_ms();
+    std::string pending;
+    llama_token tok = 0;
+    const int limit = max_tokens > 0 ? max_tokens : n_ctx;
+
+    while (true) {
+        if (s->cancel.load())  { r.status = 1; r.reason = 3; break; }
+        if (r.n_gen >= limit)  { r.reason = 1; break; }
+        if (n_used >= n_ctx)   { r.reason = 2; break; }
+
+        tok = llama_sampler_sample(smpl, s->ctx, -1);
+        if (llama_vocab_is_eog(vocab, tok)) { r.reason = 0; break; }
+
+        pending += token_to_piece(vocab, tok);
+        const size_t ready = complete_utf8_prefix(pending);
+        if (ready > 0) {
+            jbyteArray chunk = string_to_bytes(env, pending.substr(0, ready));
+            pending.erase(0, ready);
+            const jboolean keep_going = env->CallBooleanMethod(callback, on_token, chunk);
+            env->DeleteLocalRef(chunk);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); r.status = 1; r.reason = 3; break; }
+            if (keep_going == JNI_FALSE) { r.status = 1; r.reason = 3; break; }
+        }
+
+        ++r.n_gen;
+        const int32_t rc = llama_decode(s->ctx, llama_batch_get_one(&tok, 1));
+        ++n_used;
+        if (rc != 0) {
+            const bool cancelled = s->cancel.load();
+            r.status = cancelled ? 1 : -4;
+            r.reason = cancelled ? 3 : 4;
+            break;
+        }
+    }
+    if (!pending.empty() && r.status == 0) {
+        jbyteArray chunk = string_to_bytes(env, pending);
+        env->CallBooleanMethod(callback, on_token, chunk);
+        env->DeleteLocalRef(chunk);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+    r.gen_ms = now_ms() - t_gen0;
+    return r;
+}
+
+void log_perf(Session * s, const char * what, int n_prompt, double prompt_ms, const GenResult & g) {
+    const llama_perf_context_data perf = llama_perf_context(s->ctx);
+    LOGI("perf[%s]: prompt %d tok %.1f ms (llama: %.1f ms), gen %d tok %.1f ms (llama: %d tok %.1f ms)",
+         what, n_prompt, prompt_ms, perf.t_p_eval_ms, g.n_gen, g.gen_ms, perf.n_eval, perf.t_eval_ms);
+}
+
+void free_mtmd(Session * s) {
+    if (s != nullptr && s->mtmd != nullptr) {
+        mtmd_free(s->mtmd);
+        s->mtmd = nullptr;
+        LOGI("mmproj freed");
+    }
 }
 
 } // namespace
@@ -252,6 +379,7 @@ JNIEXPORT void JNICALL
 Java_com_nekohome_translate_llama_LlamaNative_nativeFree(JNIEnv *, jobject, jlong handle) {
     Session * s = as_session(handle);
     if (s == nullptr) return;
+    free_mtmd(s);   // references the model; must go first
     if (s->ctx)   llama_free(s->ctx);
     if (s->model) llama_model_free(s->model);
     delete s;
@@ -363,20 +491,13 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerate(
         jfloat temperature, jfloat top_p, jint top_k, jfloat min_p,
         jfloat repeat_penalty, jint repeat_last_n, jint seed,
         jobject callback) {
-    auto result = [&](double status, double n_prompt, double prompt_ms, double n_gen, double gen_ms, double reason) {
-        jdoubleArray arr = env->NewDoubleArray(6);
-        const jdouble v[6] = {status, n_prompt, prompt_ms, n_gen, gen_ms, reason};
-        env->SetDoubleArrayRegion(arr, 0, 6, v);
-        return arr;
-    };
-
     Session * s = as_session(handle);
-    if (s == nullptr) return result(-1, 0, 0, 0, 0, 4);
+    if (s == nullptr) return make_result(env, -1, 0, 0, 0, 0, 4);
     s->cancel.store(false);
 
     jclass cb_cls = env->GetObjectClass(callback);
     jmethodID on_token = env->GetMethodID(cb_cls, "onToken", "([B)Z");
-    if (on_token == nullptr) return result(-1, 0, 0, 0, 0, 4);
+    if (on_token == nullptr) return make_result(env, -1, 0, 0, 0, 0, 4);
 
     const llama_vocab * vocab = llama_model_get_vocab(s->model);
     const std::string prompt = bytes_to_string(env, jprompt);
@@ -384,7 +505,7 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerate(
     // The prompt is already fully formatted (chat template applied), so special tokens are parsed
     // and BOS is only added when the vocab wants one and the template did not include it.
     std::vector<llama_token> tokens = tokenize(vocab, prompt, /*add_special*/ false, /*parse_special*/ true);
-    if (tokens.empty()) return result(-2, 0, 0, 0, 0, 4);
+    if (tokens.empty()) return make_result(env, -2, 0, 0, 0, 0, 4);
     if (llama_vocab_get_add_bos(vocab)) {
         const llama_token bos = llama_vocab_bos(vocab);
         if (bos != LLAMA_TOKEN_NULL && tokens.front() != bos) tokens.insert(tokens.begin(), bos);
@@ -394,29 +515,13 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerate(
     const int n_prompt = static_cast<int>(tokens.size());
     if (n_prompt >= n_ctx - 4) {
         LOGW("prompt too long: %d tokens, n_ctx %d", n_prompt, n_ctx);
-        return result(-3, n_prompt, 0, 0, 0, 2);
+        return make_result(env, -3, n_prompt, 0, 0, 0, 2);
     }
 
     llama_memory_clear(llama_get_memory(s->ctx), true);
     llama_perf_context_reset(s->ctx);
 
-    // Sampler chain: penalties -> top-k -> top-p -> min-p -> temperature -> dist (or greedy).
-    llama_sampler_chain_params sp = llama_sampler_chain_default_params();
-    sp.no_perf = true;
-    llama_sampler * smpl = llama_sampler_chain_init(sp);
-    if (repeat_penalty > 0.0f && repeat_penalty != 1.0f) {
-        llama_sampler_chain_add(smpl, llama_sampler_init_penalties(
-                llama_vocab_n_tokens(vocab), repeat_last_n, repeat_penalty, 0.0f, 0.0f));
-    }
-    if (temperature <= 0.0f) {
-        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
-    } else {
-        if (top_k > 0)                    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
-        if (top_p > 0.0f && top_p < 1.0f) llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
-        if (min_p > 0.0f)                 llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));
-        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
-        llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : static_cast<uint32_t>(seed)));
-    }
+    llama_sampler * smpl = make_sampler(vocab, temperature, top_p, top_k, min_p, repeat_penalty, repeat_last_n, seed);
 
     // Prompt processing in n_batch chunks.
     const double t_prompt0 = now_ms();
@@ -427,62 +532,190 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerate(
             llama_sampler_free(smpl);
             const bool cancelled = s->cancel.load();
             LOGW("prompt decode rc=%d cancelled=%d", rc, cancelled);
-            return result(cancelled ? 1 : -4, n_prompt, now_ms() - t_prompt0, 0, 0, cancelled ? 3 : 4);
+            return make_result(env, cancelled ? 1 : -4, n_prompt, now_ms() - t_prompt0, 0, 0, cancelled ? 3 : 4);
         }
     }
     const double prompt_ms = now_ms() - t_prompt0;
 
-    // Generation.
-    const double t_gen0 = now_ms();
-    int n_gen = 0;
-    int n_past = n_prompt;
-    double status = 0, reason = 1;
-    std::string pending;
-    llama_token tok = 0;
-    const int limit = max_tokens > 0 ? max_tokens : n_ctx;
-
-    while (true) {
-        if (s->cancel.load()) { status = 1; reason = 3; break; }
-        if (n_gen >= limit)   { reason = 1; break; }
-        if (n_past >= n_ctx)  { reason = 2; break; }
-
-        tok = llama_sampler_sample(smpl, s->ctx, -1);
-        if (llama_vocab_is_eog(vocab, tok)) { reason = 0; break; }
-
-        pending += token_to_piece(vocab, tok);
-        const size_t ready = complete_utf8_prefix(pending);
-        if (ready > 0) {
-            jbyteArray chunk = string_to_bytes(env, pending.substr(0, ready));
-            pending.erase(0, ready);
-            const jboolean keep_going = env->CallBooleanMethod(callback, on_token, chunk);
-            env->DeleteLocalRef(chunk);
-            if (env->ExceptionCheck()) { env->ExceptionClear(); status = 1; reason = 3; break; }
-            if (keep_going == JNI_FALSE) { status = 1; reason = 3; break; }
-        }
-
-        ++n_gen;
-        const int32_t rc = llama_decode(s->ctx, llama_batch_get_one(&tok, 1));
-        ++n_past;
-        if (rc != 0) {
-            const bool cancelled = s->cancel.load();
-            status = cancelled ? 1 : -4;
-            reason = cancelled ? 3 : 4;
-            break;
-        }
-    }
-    if (!pending.empty() && status == 0) {
-        jbyteArray chunk = string_to_bytes(env, pending);
-        env->CallBooleanMethod(callback, on_token, chunk);
-        env->DeleteLocalRef(chunk);
-        if (env->ExceptionCheck()) env->ExceptionClear();
-    }
-    const double gen_ms = now_ms() - t_gen0;
+    const GenResult g = generate_loop(env, s, smpl, callback, on_token, n_prompt, max_tokens);
     llama_sampler_free(smpl);
+    log_perf(s, "text", n_prompt, prompt_ms, g);
+    return make_result(env, g.status, n_prompt, prompt_ms, g.n_gen, g.gen_ms, g.reason);
+}
 
-    const llama_perf_context_data perf = llama_perf_context(s->ctx);
-    LOGI("perf: prompt %d tok %.1f ms (llama: %.1f ms), gen %d tok %.1f ms (llama: %d tok %.1f ms)",
-         n_prompt, prompt_ms, perf.t_p_eval_ms, n_gen, gen_ms, perf.n_eval, perf.t_eval_ms);
-    return result(status, n_prompt, prompt_ms, n_gen, gen_ms, reason);
+// ------------------------------------------------------------------------------------------------
+// Image input (libmtmd)
+// ------------------------------------------------------------------------------------------------
+
+// mtmd_default_marker() as UTF-8 ("<__media__>"): where the image goes in the prompt.
+JNIEXPORT jbyteArray JNICALL
+Java_com_nekohome_translate_llama_LlamaNative_nativeMediaMarker(JNIEnv * env, jobject) {
+    return string_to_bytes(env, mtmd_default_marker());
+}
+
+// Loads the vision projector (mmproj GGUF) for the session's model, replacing any loaded one.
+// `image_max_tokens` > 0 caps the number of image tokens (mtmd downscales larger images).
+// Returns 0 ok, -1 bad handle, -2 load failed, -3 the projector has no vision encoder.
+JNIEXPORT jint JNICALL
+Java_com_nekohome_translate_llama_LlamaNative_nativeMmprojLoad(
+        JNIEnv * env, jobject, jlong handle, jbyteArray jpath, jint n_threads, jint image_max_tokens) {
+    Session * s = as_session(handle);
+    if (s == nullptr || s->model == nullptr) return -1;
+    free_mtmd(s);
+    if (!g_mtmd_log_ready) {
+        mtmd_helper_log_set(log_cb, nullptr);   // also routes mtmd/clip logs to logcat
+        g_mtmd_log_ready = true;
+    }
+
+    const std::string path = bytes_to_string(env, jpath);
+    mtmd_context_params mp = mtmd_context_params_default();
+    mp.use_gpu       = false;   // CPU only, like the text model (n_gpu_layers = 0)
+    mp.print_timings = true;
+    mp.n_threads     = std::max(1, static_cast<int>(n_threads));
+    mp.media_marker  = mtmd_default_marker();
+    mp.warmup        = false;   // skip the max-size warmup encode: faster load, less peak memory
+    if (image_max_tokens > 0) mp.image_max_tokens = image_max_tokens;
+    mp.cb_eval           = mtmd_eval_cb;
+    mp.cb_eval_user_data = s;
+
+    LOGI("Loading mmproj: %s (threads=%d, image_max_tokens=%d)", path.c_str(), mp.n_threads, image_max_tokens);
+    const double t0 = now_ms();
+    mtmd_context * m = mtmd_init_from_file(path.c_str(), s->model, mp);
+    if (m == nullptr) {
+        LOGE("mtmd_init_from_file failed");
+        return -2;
+    }
+    if (!mtmd_support_vision(m)) {
+        LOGE("mmproj has no vision encoder");
+        mtmd_free(m);
+        return -3;
+    }
+    s->mtmd = m;
+    LOGI("mmproj loaded in %.0f ms (mrope=%d)", now_ms() - t0, mtmd_decode_use_mrope(m) ? 1 : 0);
+    return 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_nekohome_translate_llama_LlamaNative_nativeMmprojFree(JNIEnv *, jobject, jlong handle) {
+    free_mtmd(as_session(handle));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nekohome_translate_llama_LlamaNative_nativeMmprojLoaded(JNIEnv *, jobject, jlong handle) {
+    Session * s = as_session(handle);
+    return s != nullptr && s->mtmd != nullptr ? JNI_TRUE : JNI_FALSE;
+}
+
+// Like nativeGenerate, but the formatted prompt contains the media marker and `rgb` is the image
+// as packed RGB888 (width * height * 3 bytes, row-major, no padding).
+// Extra statuses: -5 no mmproj loaded, -6 bad image / image preprocessing failed, -7 image encode
+// or embedding decode failed.
+JNIEXPORT jdoubleArray JNICALL
+Java_com_nekohome_translate_llama_LlamaNative_nativeGenerateImage(
+        JNIEnv * env, jobject, jlong handle,
+        jbyteArray jprompt, jbyteArray jrgb, jint width, jint height,
+        jint max_tokens,
+        jfloat temperature, jfloat top_p, jint top_k, jfloat min_p,
+        jfloat repeat_penalty, jint repeat_last_n, jint seed,
+        jobject callback) {
+    Session * s = as_session(handle);
+    if (s == nullptr) return make_result(env, -1, 0, 0, 0, 0, 4);
+    s->cancel.store(false);
+    s->eval_nodes = 0;
+    if (s->mtmd == nullptr) return make_result(env, -5, 0, 0, 0, 0, 4);
+
+    jclass cb_cls = env->GetObjectClass(callback);
+    jmethodID on_token = env->GetMethodID(cb_cls, "onToken", "([B)Z");
+    if (on_token == nullptr) return make_result(env, -1, 0, 0, 0, 0, 4);
+
+    // ---- image -> mtmd_bitmap (copies the pixels)
+    if (jrgb == nullptr || width <= 0 || height <= 0) return make_result(env, -6, 0, 0, 0, 0, 4);
+    const size_t n_bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
+    if (static_cast<size_t>(env->GetArrayLength(jrgb)) != n_bytes) {
+        LOGE("image buffer size %d != %dx%dx3", env->GetArrayLength(jrgb), width, height);
+        return make_result(env, -6, 0, 0, 0, 0, 4);
+    }
+    mtmd_bitmap * bitmap = nullptr;
+    {
+        jbyte * px = env->GetByteArrayElements(jrgb, nullptr);
+        if (px == nullptr) return make_result(env, -6, 0, 0, 0, 0, 4);
+        bitmap = mtmd_bitmap_init(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                                  reinterpret_cast<const unsigned char *>(px));
+        env->ReleaseByteArrayElements(jrgb, px, JNI_ABORT);
+    }
+    if (bitmap == nullptr) return make_result(env, -6, 0, 0, 0, 0, 4);
+
+    // ---- prompt + image -> chunks
+    std::string prompt = bytes_to_string(env, jprompt);
+    const std::string marker = mtmd_default_marker();
+    if (prompt.find(marker) == std::string::npos) {
+        LOGW("prompt has no media marker; putting the image first");
+        prompt.insert(0, marker);
+    }
+    mtmd_input_text text;
+    text.text          = prompt.c_str();
+    text.text_len      = prompt.size();
+    text.add_special   = true;   // BOS only if the vocab wants one (Qwen does not)
+    text.parse_special = true;   // the chat template's special tokens are written literally
+
+    mtmd_input_chunks * chunks = mtmd_input_chunks_init();
+    const mtmd_bitmap * bitmaps[1] = { bitmap };
+    const int32_t tok_rc = mtmd_tokenize(s->mtmd, chunks, &text, bitmaps, 1);
+    mtmd_bitmap_free(bitmap);
+    if (tok_rc != 0) {
+        LOGE("mtmd_tokenize failed: %d", tok_rc);
+        mtmd_input_chunks_free(chunks);
+        return make_result(env, tok_rc == 2 ? -6 : -2, 0, 0, 0, 0, 4);
+    }
+
+    const int n_ctx    = static_cast<int>(llama_n_ctx(s->ctx));
+    const int n_prompt = static_cast<int>(mtmd_helper_get_n_tokens(chunks));
+    if (n_prompt >= n_ctx - 4) {
+        LOGW("image prompt too long: %d tokens, n_ctx %d", n_prompt, n_ctx);
+        mtmd_input_chunks_free(chunks);
+        return make_result(env, -3, n_prompt, 0, 0, 0, 2);
+    }
+
+    llama_memory_clear(llama_get_memory(s->ctx), true);
+    llama_perf_context_reset(s->ctx);
+
+    // ---- evaluate chunk by chunk (text: llama_decode; image: CLIP encode + embedding decode), so a
+    // stop request is honoured between chunks as well as inside each one (abort_cb / mtmd_eval_cb).
+    const double t_prompt0 = now_ms();
+    const size_t n_chunks = mtmd_input_chunks_size(chunks);
+    llama_pos n_past = 0;
+    for (size_t i = 0; i < n_chunks; ++i) {
+        if (s->cancel.load()) {
+            mtmd_input_chunks_free(chunks);
+            return make_result(env, 1, n_prompt, now_ms() - t_prompt0, 0, 0, 3);
+        }
+        const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
+        const bool is_image = mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_TEXT;
+        llama_pos new_n_past = n_past;
+        const int32_t rc = mtmd_helper_eval_chunk_single(s->mtmd, s->ctx, chunk, n_past, /*seq_id*/ 0,
+                                                         s->n_batch, /*logits_last*/ i == n_chunks - 1, &new_n_past);
+        // A cancelled encode returns "success" with a partial result: check the flag first.
+        if (s->cancel.load()) {
+            mtmd_input_chunks_free(chunks);
+            return make_result(env, 1, n_prompt, now_ms() - t_prompt0, 0, 0, 3);
+        }
+        if (rc != 0) {
+            LOGE("mtmd_helper_eval_chunk_single(%zu, %s) rc=%d", i, is_image ? "image" : "text", rc);
+            mtmd_input_chunks_free(chunks);
+            return make_result(env, is_image ? -7 : -4, n_prompt, now_ms() - t_prompt0, 0, 0, 4);
+        }
+        n_past = new_n_past;
+    }
+    mtmd_input_chunks_free(chunks);
+    const double prompt_ms = now_ms() - t_prompt0;
+    LOGI("image prompt evaluated: %d tokens, n_pos %d, %zu chunks, %.0f ms", n_prompt, static_cast<int>(n_past), n_chunks, prompt_ms);
+
+    const llama_vocab * vocab = llama_model_get_vocab(s->model);
+    llama_sampler * smpl = make_sampler(vocab, temperature, top_p, top_k, min_p, repeat_penalty, repeat_last_n, seed);
+    const GenResult g = generate_loop(env, s, smpl, callback, on_token, n_prompt, max_tokens);
+    llama_sampler_free(smpl);
+    log_perf(s, "image", n_prompt, prompt_ms, g);
+    return make_result(env, g.status, n_prompt, prompt_ms, g.n_gen, g.gen_ms, g.reason);
 }
 
 } // extern "C"

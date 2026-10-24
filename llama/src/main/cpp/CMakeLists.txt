@@ -52,6 +52,12 @@ set(LLAMA_SRC ${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/llama.cpp)
 if (NOT EXISTS ${LLAMA_SRC}/CMakeLists.txt)
     message(FATAL_ERROR "llama.cpp submodule missing at ${LLAMA_SRC}. Run: git submodule update --init --recursive")
 endif()
+# libmtmd (tools/mtmd): multimodal (image) input for vision-capable models such as Index-Translate
+# with its mmproj. LLAMA_BUILD_MTMD builds just that library while LLAMA_BUILD_TOOLS stays OFF.
+# Video input would need ffmpeg in a subprocess; never on Android.
+set(LLAMA_BUILD_MTMD ON)
+set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(${LLAMA_SRC} build-llama)
 
 add_library(${CMAKE_PROJECT_NAME} SHARED
@@ -62,9 +68,11 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${LLAMA_SRC}/include
-        ${LLAMA_SRC}/ggml/include)
+        ${LLAMA_SRC}/ggml/include
+        ${LLAMA_SRC}/tools/mtmd)
 
 target_link_libraries(${CMAKE_PROJECT_NAME}
+        mtmd
         llama
         ggml
         android

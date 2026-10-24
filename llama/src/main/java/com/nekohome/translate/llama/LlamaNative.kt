@@ -51,6 +51,37 @@ internal object LlamaNative {
         seed: Int,
         callback: TokenCallback,
     ): DoubleArray
+
+    // ---- image input (libmtmd + mmproj)
+
+    /** mtmd_default_marker() as UTF-8. */
+    external fun nativeMediaMarker(): ByteArray
+
+    /** @return 0 ok, -1 bad handle, -2 load failed, -3 no vision encoder in the file */
+    external fun nativeMmprojLoad(handle: Long, path: ByteArray, nThreads: Int, imageMaxTokens: Int): Int
+    external fun nativeMmprojFree(handle: Long)
+    external fun nativeMmprojLoaded(handle: Long): Boolean
+
+    /**
+     * Like [nativeGenerate]; [prompt] contains the media marker and [rgb] is packed RGB888
+     * (`width * height * 3` bytes). Same result layout and [TokenCallback] contract.
+     */
+    external fun nativeGenerateImage(
+        handle: Long,
+        prompt: ByteArray,
+        rgb: ByteArray,
+        width: Int,
+        height: Int,
+        maxTokens: Int,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        minP: Float,
+        repeatPenalty: Float,
+        repeatLastN: Int,
+        seed: Int,
+        callback: TokenCallback,
+    ): DoubleArray
 }
 
 /** Receives complete UTF-8 chunks of generated text. Return false to stop generation. */

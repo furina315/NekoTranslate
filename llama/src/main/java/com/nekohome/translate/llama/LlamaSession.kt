@@ -52,6 +52,9 @@ data class GenerationStats(
         -2 -> "Tokenization failed"
         -3 -> "Prompt is longer than the context window ($promptTokens tokens)"
         -4 -> "llama_decode failed"
+        -5 -> "No vision projector (mmproj) loaded"
+        -6 -> "Image could not be processed"
+        -7 -> "Image encoding failed"
         else -> "Generation failed (status $status)"
     }
 }
@@ -70,6 +73,14 @@ data class ModelInfo(
 
 data class ChatMessage(val role: String, val content: String)
 
+/** An image as packed RGB888 pixels (`width * height * 3` bytes, row-major, no padding). */
+class RgbImage(val width: Int, val height: Int, val rgb: ByteArray) {
+    init {
+        require(width > 0 && height > 0) { "Empty image" }
+        require(rgb.size.toLong() == width.toLong() * height * 3) { "RGB buffer size mismatch" }
+    }
+}
+
 /**
  * One loaded model + context. Not thread-safe: use it from a single thread
  * (except [cancel], which may be called from anywhere).
@@ -80,6 +91,12 @@ class LlamaSession private constructor(handle: Long) : Closeable {
     private var handle: Long = handle
 
     companion object {
+        /**
+         * Placeholder for the image in an image prompt; must equal mtmd_default_marker() (checked
+         * natively: a prompt without it gets the image prepended).
+         */
+        const val MEDIA_MARKER = "<__media__>"
+
         /** Loads from a file path. `/proc/self/fd/N` paths are accepted too. */
         fun load(path: String, params: LoadParams = LoadParams()): LlamaSession {
             val h = LlamaNative.nativeLoad(
@@ -172,15 +189,65 @@ class LlamaSession private constructor(handle: Long) : Closeable {
             sampling.repeatLastN,
             sampling.seed,
         ) { bytes -> onToken(bytes.toString(Charsets.UTF_8)) }
-        return GenerationStats(
-            status = r[0].toInt(),
-            promptTokens = r[1].toInt(),
-            promptMs = r[2],
-            generatedTokens = r[3].toInt(),
-            generationMs = r[4],
-            stopReason = StopReason.entries.getOrElse(r[5].toInt()) { StopReason.ERROR },
-        )
+        return stats(r)
     }
+
+    /** True while a vision projector is loaded for this session. */
+    val hasMmproj: Boolean get() = handle != 0L && LlamaNative.nativeMmprojLoaded(handle)
+
+    /**
+     * Loads the vision projector [path] (an mmproj GGUF) for this model, replacing any loaded one.
+     * [imageMaxTokens] > 0 caps the image tokens per image. Throws on failure.
+     */
+    fun loadMmproj(path: String, nThreads: Int, imageMaxTokens: Int) {
+        when (val rc = LlamaNative.nativeMmprojLoad(requireHandle(), path.toByteArray(Charsets.UTF_8), nThreads, imageMaxTokens)) {
+            0 -> Unit
+            -3 -> throw IllegalStateException("Not a vision projector: $path")
+            else -> throw IllegalStateException("Failed to load mmproj ($rc): $path")
+        }
+    }
+
+    fun freeMmproj() {
+        val h = handle
+        if (h != 0L) LlamaNative.nativeMmprojFree(h)
+    }
+
+    /**
+     * Like [generate], for a formatted [prompt] containing [MEDIA_MARKER] plus [image].
+     * Requires [loadMmproj] first.
+     */
+    fun generateWithImage(
+        prompt: String,
+        image: RgbImage,
+        sampling: SamplingParams,
+        onToken: (String) -> Boolean,
+    ): GenerationStats {
+        val r = LlamaNative.nativeGenerateImage(
+            requireHandle(),
+            prompt.toByteArray(Charsets.UTF_8),
+            image.rgb,
+            image.width,
+            image.height,
+            sampling.maxTokens,
+            sampling.temperature,
+            sampling.topP,
+            sampling.topK,
+            sampling.minP,
+            sampling.repeatPenalty,
+            sampling.repeatLastN,
+            sampling.seed,
+        ) { bytes -> onToken(bytes.toString(Charsets.UTF_8)) }
+        return stats(r)
+    }
+
+    private fun stats(r: DoubleArray) = GenerationStats(
+        status = r[0].toInt(),
+        promptTokens = r[1].toInt(),
+        promptMs = r[2],
+        generatedTokens = r[3].toInt(),
+        generationMs = r[4],
+        stopReason = StopReason.entries.getOrElse(r[5].toInt()) { StopReason.ERROR },
+    )
 
     /** Thread-safe: requests the running [generate] (or prompt processing) to stop. */
     fun cancel() {

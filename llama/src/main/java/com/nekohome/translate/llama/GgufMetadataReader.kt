@@ -26,7 +26,10 @@ object GgufMetadataReader {
         "general.size_label",
         "general.file_type",
         "general.quantization_version",
+        "general.type",
         "tokenizer.chat_template",
+        "clip.has_vision_encoder",
+        "clip.projector_type",
     )
 
     data class GgufHeader(
@@ -39,6 +42,14 @@ object GgufMetadataReader {
         val chatTemplate: String? get() = metadata["tokenizer.chat_template"] as? String
         val fileType: Int? get() = (metadata["general.file_type"] as? Number)?.toInt()
         val fileTypeName: String? get() = fileType?.let { fileTypeName(it) }
+        /** general.type, e.g. "model" or "mmproj" (absent in older files). */
+        val type: String? get() = metadata["general.type"] as? String
+        val projectorType: String? get() = metadata["clip.projector_type"] as? String
+        val hasVisionEncoder: Boolean get() = metadata["clip.has_vision_encoder"] == true
+
+        /** True for a multimodal projector (mmproj) GGUF: arch "clip" or general.type "mmproj". */
+        val isMmproj: Boolean get() = architecture == "clip" || type == "mmproj"
+
         fun contextLength(): Long? =
             architecture?.let { (metadata["$it.context_length"] as? Number)?.toLong() }
     }

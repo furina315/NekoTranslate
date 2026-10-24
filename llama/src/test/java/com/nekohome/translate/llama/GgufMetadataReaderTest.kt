@@ -56,4 +56,23 @@ class GgufMetadataReaderTest {
     fun rejectsNonGguf() {
         GgufMetadataReader.read(ByteArrayInputStream(ByteArray(64)))
     }
+
+    @Test
+    fun recognisesVisionProjector() {
+        // Header layout of Index-Translate-2B.mmproj-Q8_0.gguf (abridged).
+        val w = Writer()
+        w.out.write("GGUF".toByteArray())
+        w.u32(3); w.u64(0); w.u64(5)
+        w.str("general.architecture"); w.u32(8); w.str("clip")
+        w.str("general.type"); w.u32(8); w.str("mmproj")
+        w.str("clip.has_vision_encoder"); w.u32(7); w.out.write(1)
+        w.str("clip.vision.image_mean"); w.u32(9); w.u32(6); w.u64(3); w.u32(0); w.u32(0); w.u32(0)
+        w.str("clip.projector_type"); w.u32(8); w.str("qwen3vl_merger")
+        val h = GgufMetadataReader.read(ByteArrayInputStream(w.out.toByteArray()))
+        assertTrue(h.isMmproj)
+        assertTrue(h.hasVisionEncoder)
+        assertEquals("mmproj", h.type)
+        assertEquals("qwen3vl_merger", h.projectorType)
+        assertFalse(GgufMetadataReader.read(ByteArrayInputStream(sampleGguf())).isMmproj)
+    }
 }
