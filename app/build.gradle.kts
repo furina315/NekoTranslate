@@ -32,7 +32,7 @@ android {
         versionName = (findProperty("lt.versionName") as String?) ?: "0.1.0"
 
         // Shown in 设置 → 关于; keep in sync with the third_party/llama.cpp submodule tag.
-        buildConfigField("String", "LLAMA_CPP_VERSION", "\"b11707\"")
+        buildConfigField("String", "LLAMA_CPP_VERSION", "\"b11827\"")
     }
 
     // One APK per ABI plus a universal one (all ABIs). Native libs come from :llama.
