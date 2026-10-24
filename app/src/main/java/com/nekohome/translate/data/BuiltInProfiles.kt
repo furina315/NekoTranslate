@@ -74,6 +74,10 @@ object BuiltInProfiles {
         // ... and with --source auto (source-language name omitted):
         autoSourceTemplate = "请将以下文本翻译为{target_lang}，直接输出翻译结果，不要进行任何解释。\n\n{text}",
         languages = indexLanguages,
+        // Image translation (companion mmproj, docs/image_translate.md): translate.py's image
+        // prompt, followed by the image in the same user turn.
+        imageTemplate = ModelProfile.DEFAULT_IMAGE_TEMPLATE,
+        imageAutoSourceTemplate = ModelProfile.DEFAULT_IMAGE_AUTO_TEMPLATE,
         chatFormat = ChatFormat.Wrapper(QWEN35_NO_THINK),
         // Client defaults: greedy (temperature=0), max_tokens=1024; top-p/top-k/penalties not set
         // by the client (server defaults), so they are disabled here.
@@ -90,6 +94,7 @@ object BuiltInProfiles {
             "https://huggingface.co/IndexTeam/Index-Translate-2B",
             "https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF",
             "https://github.com/bilibili/Index-Translate/blob/main/inference/llm/translate.py",
+            "https://github.com/bilibili/Index-Translate/blob/main/docs/image_translate.md",
         ),
         notes = "Thinking disabled (empty <think></think> block). Any emitted <think> block is stripped.",
     )

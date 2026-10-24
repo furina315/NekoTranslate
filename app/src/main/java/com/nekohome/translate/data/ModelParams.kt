@@ -20,6 +20,11 @@ data class ModelParams(
     val maxTokens: Int? = null,
     val nCtx: Int? = null,
     val nThreads: Int? = null,
+    /**
+     * File name (in filesDir/mmproj) of the vision projector associated with this model for image
+     * translation; `null` = none. Not a tunable value: kept by [resetToDefaults].
+     */
+    val mmproj: String? = null,
 ) {
     /** Effective profile: the override if any, else [matched]; Custom gets the user's template. */
     fun profile(matched: ModelProfile): ModelProfile {
@@ -54,7 +59,8 @@ data class ModelParams(
         nCtx = null, nThreads = null,
     )
 
-    val hasValueOverrides: Boolean get() = this != ModelParams(profileId = profileId, customTemplate = customTemplate)
+    val hasValueOverrides: Boolean
+        get() = this != ModelParams(profileId = profileId, customTemplate = customTemplate, mmproj = mmproj)
 
     companion object {
         const val DEFAULT_CONTEXT = 4096
@@ -80,6 +86,7 @@ object ModelParamsCodec {
     private const val MAX_TOKENS = "max_tokens"
     private const val N_CTX = "n_ctx"
     private const val N_THREADS = "n_threads"
+    private const val MMPROJ = "mmproj"
 
     fun encode(modelKey: String, p: ModelParams): Map<String, String> = buildMap<String, String> {
         fun add(field: String, v: Any?) { if (v != null) put("$modelKey$SEP$field", v.toString()) }
@@ -92,6 +99,7 @@ object ModelParamsCodec {
         add(MAX_TOKENS, p.maxTokens)
         add(N_CTX, p.nCtx)
         add(N_THREADS, p.nThreads)
+        add(MMPROJ, p.mmproj)
     }
 
     fun belongsTo(key: String, modelKey: String): Boolean = splitKey(key)?.first == modelKey
@@ -112,6 +120,7 @@ object ModelParamsCodec {
         maxTokens = f[MAX_TOKENS]?.toIntOrNull(),
         nCtx = f[N_CTX]?.toIntOrNull(),
         nThreads = f[N_THREADS]?.toIntOrNull(),
+        mmproj = f[MMPROJ]?.takeIf { it.isNotBlank() },
     )
 
     private fun splitKey(key: String): Pair<String, String>? {

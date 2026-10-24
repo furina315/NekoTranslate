@@ -66,6 +66,13 @@ data class ModelProfile(
      */
     val englishTemplate: String? = null,
     val languages: List<Language>,
+    /**
+     * Instruction for translating the text in an image (needs an mmproj), with {source_lang} /
+     * {target_lang} in [promptLocale]; `null` = the built-in default for [promptLocale].
+     */
+    val imageTemplate: String? = null,
+    /** Like [imageTemplate] for an auto-detected source. */
+    val imageAutoSourceTemplate: String? = null,
     val chatFormat: ChatFormat,
     val sampling: SamplingParams,
     /** Extra safety stops (the model's EOG tokens already end generation). */
@@ -94,6 +101,27 @@ data class ModelProfile(
     }
 
     /**
+     * Builds the user message for translating the text in an image: the instruction followed by
+     * [mediaMarker] (where the image goes, see LlamaSession.MEDIA_MARKER). Same order as the
+     * official client (translate.py sends content = [text, image_url]; the Qwen3.5 chat template
+     * renders the parts in order, the image as <|vision_start|>…<|vision_end|>).
+     */
+    fun buildImagePrompt(source: Language, target: Language, mediaMarker: String): String {
+        val zh = promptLocale == PromptLocale.ZH
+        val template = if (source.isAuto) {
+            imageAutoSourceTemplate ?: imageTemplate?.takeIf { "{source_lang}" !in it }
+                ?: if (zh) DEFAULT_IMAGE_AUTO_TEMPLATE else DEFAULT_IMAGE_AUTO_TEMPLATE_EN
+        } else {
+            imageTemplate ?: if (zh) DEFAULT_IMAGE_TEMPLATE else DEFAULT_IMAGE_TEMPLATE_EN
+        }
+        fun name(l: Language) = if (promptLocale == PromptLocale.ZH) l.nameZh else l.nameEn
+        val instruction = template
+            .replace("{source_lang}", if (source.isAuto) "" else name(source))
+            .replace("{target_lang}", name(target))
+        return instruction + mediaMarker
+    }
+
+    /**
      * Hy-MT2 rule (inferred from the model card note "Chinese names in Chinese prompts, English
      * names in English prompts" and the HY-MT1.5 convention of ZH<=>XX = Chinese prompt,
      * XX<=>XX = English prompt): use the Chinese prompt when either side is Chinese.
@@ -103,5 +131,18 @@ data class ModelProfile(
         if (target.isChineseFamily) return true
         if (!source.isAuto) return source.isChineseFamily
         return text.any { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN }
+    }
+
+    companion object {
+        /**
+         * Image prompt of Index-Translate's official client (inference/llm/translate.py, --image),
+         * with and without a source language.
+         */
+        const val DEFAULT_IMAGE_TEMPLATE = "请将图片中的{source_lang}文本翻译为{target_lang}，直接输出翻译结果，不要进行任何解释。"
+        const val DEFAULT_IMAGE_AUTO_TEMPLATE = "请将图片中的文本翻译为{target_lang}，直接输出翻译结果，不要进行任何解释。"
+
+        /** The docs' English image prompt, for profiles whose prompts use English language names. */
+        const val DEFAULT_IMAGE_TEMPLATE_EN = "Translate the {source_lang} text in the image into {target_lang}, outputting translation only."
+        const val DEFAULT_IMAGE_AUTO_TEMPLATE_EN = "Translate the text in the image into {target_lang}, outputting translation only."
     }
 }

@@ -28,6 +28,13 @@
     <string name="translate_stop_context_full">上下文已满</string>
     <string name="translate_stop_cancelled">已停止</string>
     <string name="translate_stop_error">出错</string>
+    <string name="translate_image_entry">图片翻译</string>
+    <string name="translate_image_camera">拍照</string>
+    <string name="translate_image_gallery">从相册选择</string>
+    <string name="translate_image_desc">待翻译的图片</string>
+    <string name="translate_image_remove">移除图片</string>
+    <string name="translate_image_preparing">正在处理图片…</string>
+    <string name="translate_image_no_camera">没有可用的相机应用</string>
 
     <!-- 模型页 -->
     <string name="models_title">模型</string>
@@ -75,6 +82,13 @@
     <string name="models_section_collapse">收起</string>
     <string name="models_decrease">减小</string>
     <string name="models_increase">增大</string>
+    <string name="models_mmproj_none">图片翻译：未关联视觉组件（mmproj）</string>
+    <string name="models_mmproj_attached">图片翻译：%1$s</string>
+    <string name="models_mmproj_importing">正在导入视觉组件…</string>
+    <string name="models_mmproj_attach">关联 mmproj</string>
+    <string name="models_mmproj_remove">移除</string>
+    <string name="models_mmproj_remove_title">移除视觉组件？</string>
+    <string name="models_mmproj_remove_body">“%1$s”将不再支持图片翻译。若没有其他模型使用该 mmproj 文件，它会从本机删除。</string>
 
     <!-- ViewModel 提示 -->
     <string name="msg_imported">已导入 %1$s（%2$s）</string>
@@ -84,6 +98,11 @@
     <string name="msg_load_failed">加载失败：%1$s</string>
     <string name="msg_load_failed_hy_hint">（Hy-MT2 的 1.25bit/2bit GGUF 需要非主线 STQ 内核，无法加载，请改用 Q4_K_M 等常规量化）</string>
     <string name="msg_translate_failed">翻译失败：%1$s</string>
+    <string name="msg_mmproj_attached">已为 %1$s 开启图片翻译</string>
+    <string name="msg_mmproj_import_failed">导入 mmproj 失败：%1$s</string>
+    <string name="msg_mmproj_no_model">%1$s 是视觉组件（mmproj），但没找到对应的模型。请先导入模型，再在模型卡片上点「关联 mmproj」。</string>
+    <string name="msg_mmproj_removed">已移除视觉组件</string>
+    <string name="msg_image_failed">无法读取图片：%1$s</string>
 
     <!-- 设置页 -->
     <string name="settings_title">设置</string>

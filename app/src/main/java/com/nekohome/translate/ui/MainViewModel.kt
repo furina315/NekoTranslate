@@ -2,6 +2,9 @@ package com.nekohome.translate.ui
 
 import android.app.Application
 import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.content.FileProvider
 import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -9,19 +12,27 @@ import com.nekohome.translate.R
 import com.nekohome.translate.data.BuiltInProfiles
 import com.nekohome.translate.data.Language
 import com.nekohome.translate.data.LanguageRules
+import com.nekohome.translate.data.ImportResult
 import com.nekohome.translate.data.LocalModel
+import com.nekohome.translate.data.MmprojNames
 import com.nekohome.translate.data.ModelParams
 import com.nekohome.translate.data.ModelParamsStore
 import com.nekohome.translate.data.ModelProfile
 import com.nekohome.translate.data.ModelRepository
 import com.nekohome.translate.data.SettingsRepository
 import com.nekohome.translate.engine.GenerationEvent
+import com.nekohome.translate.engine.ImageLoader
+import com.nekohome.translate.engine.ImagePrep
 import com.nekohome.translate.engine.LoadedModel
 import com.nekohome.translate.engine.MemoryStats
 import com.nekohome.translate.engine.TranslationEngine
 import com.nekohome.translate.engine.throttleLatest
 import androidx.compose.runtime.Immutable
+import com.nekohome.translate.llama.LlamaSession
+import com.nekohome.translate.llama.RgbImage
 import com.nekohome.translate.llama.StopReason
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -34,6 +45,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -70,6 +82,13 @@ data class MainUiState(
     val stats: GenStats? = null,
     val message: String? = null,
     val systemInfo: String = "",
+    /** Vision projectors on disk (file name -> size in bytes). */
+    val mmprojFiles: Map<String, Long> = emptyMap(),
+    /** Model file name an mmproj is being imported for (progress shown on that card). */
+    val mmprojImportFor: String? = null,
+    /** Thumbnail of the image to translate; the pixels themselves live in the ViewModel. */
+    val imageThumb: ImageBitmap? = null,
+    val isPreparingImage: Boolean = false,
 ) {
     val selectedModel: LocalModel? get() = models.firstOrNull { it.file.absolutePath == selectedPath }
     val loadedModel: LocalModel? get() = loaded?.let { l -> models.firstOrNull { it.file.absolutePath == l.path } }
@@ -84,7 +103,16 @@ data class MainUiState(
     val sourceLanguage: Language get() = LanguageRules.resolveSource(activeProfile, sourceCode)
     val targetLanguage: Language get() = LanguageRules.resolveTarget(activeProfile, targetCode)
 
-    val canTranslate: Boolean get() = loaded != null && !isLoading && !isTranslating && input.isNotBlank()
+    val hasImage: Boolean get() = imageThumb != null
+
+    val canTranslate: Boolean
+        get() = loaded != null && !isLoading && !isTranslating && !isPreparingImage && (hasImage || input.isNotBlank())
+
+    /** The model's associated vision projector file name, if it is still on disk. */
+    fun mmprojFor(model: LocalModel): String? = paramsFor(model).mmproj?.takeIf { it in mmprojFiles }
+
+    /** Image translation is offered only when the loaded model has a vision projector. */
+    val imageSupported: Boolean get() = loadedModel?.let { mmprojFor(it) } != null
 
     /** True when the loaded model's context/threads differ from its saved parameters. */
     fun needsReload(model: LocalModel): Boolean {
@@ -123,6 +151,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private var translateJob: Job? = null
+    private var imageJob: Job? = null
+
+    /** Pixels of the picked image (thumbnail in [MainUiState.imageThumb]). */
+    private var pendingImage: RgbImage? = null
     private val saveJobs = HashMap<String, Job>()
     private val paramsReady = viewModelScope.async { paramsStore.loadAll() }
 
@@ -155,11 +187,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshModels(selectPath: String? = null) {
         viewModelScope.launch {
             val models = repository.listModels()
+            val mmproj = listMmproj()
             _state.update { st ->
                 val paths = models.map { it.file.absolutePath }
                 val chosen = listOf(selectPath, st.selectedPath, st.loaded?.path).firstOrNull { it != null && it in paths }
                     ?: paths.firstOrNull()
-                st.copy(models = models, selectedPath = chosen)
+                st.copy(models = models, selectedPath = chosen, mmprojFiles = mmproj)
             }
         }
     }
@@ -169,11 +202,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _state.update { it.copy(importProgress = -1f, message = null) }
             try {
-                val model = repository.import(uri) { p -> _state.update { it.copy(importProgress = p) } }
-                _state.update {
-                    it.copy(importProgress = null, message = str(R.string.msg_imported, model.fileName, model.profile.displayName))
+                when (val result = repository.import(uri) { p -> _state.update { it.copy(importProgress = p) } }) {
+                    is ImportResult.Model -> {
+                        val model = result.model
+                        _state.update {
+                            it.copy(importProgress = null, message = str(R.string.msg_imported, model.fileName, model.profile.displayName))
+                        }
+                        refreshModels(selectPath = model.file.absolutePath)
+                    }
+                    is ImportResult.Projector -> {
+                        _state.update { it.copy(importProgress = null) }
+                        adoptImportedMmproj(result.file)
+                    }
                 }
-                refreshModels(selectPath = model.file.absolutePath)
             } catch (t: Throwable) {
                 _state.update { it.copy(importProgress = null, message = str(R.string.msg_import_failed, t.message ?: "")) }
             }
@@ -191,6 +232,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.update {
                 it.copy(loadingPath = model.file.absolutePath, selectedPath = model.file.absolutePath, message = null)
             }
+            clearImageInternal()
             try {
                 val loaded = engine.load(model.file, params)
                 val rss = MemoryStats.residentMb()
@@ -222,6 +264,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.isTranslating) return
         viewModelScope.launch {
             engine.unload()
+            clearImageInternal()
             _state.update { it.copy(loaded = null, loadInfo = "", stats = null) }
         }
     }
@@ -232,9 +275,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             if (_state.value.isLoaded(model)) {
                 engine.unload()
+                clearImageInternal()
                 _state.update { it.copy(loaded = null, loadInfo = "", stats = null) }
             }
+            val projector = _state.value.paramsFor(model).mmproj
             repository.delete(model)
+            if (projector != null) deleteMmprojIfUnused(projector, exceptModel = model.fileName)
             saveJobs.remove(model.fileName)?.cancel()
             paramsStore.remove(model.fileName)
             _state.update {
@@ -245,6 +291,165 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
             refreshModels()
+        }
+    }
+
+    // ------------------------------------------------------------------ vision projector (mmproj)
+
+    private suspend fun listMmproj(): Map<String, Long> = withContext(Dispatchers.IO) {
+        repository.mmprojDir.listFiles { f -> f.isFile && f.name.endsWith(".gguf", ignoreCase = true) }
+            .orEmpty()
+            .associate { it.name to it.length() }
+    }
+
+    private suspend fun refreshMmprojFiles() {
+        val files = listMmproj()
+        _state.update { it.copy(mmprojFiles = files) }
+    }
+
+    /** Imports an mmproj GGUF picked on [model]'s card and associates it with that model. */
+    fun attachMmproj(model: LocalModel, uri: Uri) {
+        val st = _state.value
+        if (st.importProgress != null || st.isTranslating) return
+        viewModelScope.launch {
+            _state.update { it.copy(importProgress = -1f, mmprojImportFor = model.fileName, message = null) }
+            try {
+                val file = repository.importMmproj(uri) { p -> _state.update { it.copy(importProgress = p) } }
+                _state.update { it.copy(importProgress = null, mmprojImportFor = null) }
+                associateMmproj(model, file)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                _state.update {
+                    it.copy(importProgress = null, mmprojImportFor = null, message = str(R.string.msg_mmproj_import_failed, t.message ?: ""))
+                }
+            }
+        }
+    }
+
+    /** An mmproj came in through the normal model import: pair it with its model by file name. */
+    private suspend fun adoptImportedMmproj(file: File) {
+        val st = _state.value
+        val names = st.models.map { it.fileName }
+        val target = MmprojNames.bestModelFor(file.name, names, preferred = st.selectedModel?.fileName)
+            ?.let { name -> st.models.firstOrNull { it.fileName == name } }
+        if (target == null) {
+            file.delete()
+            _state.update { it.copy(message = str(R.string.msg_mmproj_no_model, file.name)) }
+            return
+        }
+        associateMmproj(target, file)
+    }
+
+    private suspend fun associateMmproj(model: LocalModel, file: File) {
+        val previous = _state.value.paramsFor(model).mmproj
+        updateParams(model) { it.copy(mmproj = file.name) }
+        flushParams(model)
+        if (_state.value.isLoaded(model)) engine.releaseMmproj() // loaded lazily on the next image
+        if (previous != null && previous != file.name) deleteMmprojIfUnused(previous, exceptModel = null)
+        refreshMmprojFiles()
+        _state.update {
+            it.copy(selectedPath = model.file.absolutePath, message = str(R.string.msg_mmproj_attached, model.file.nameWithoutExtension))
+        }
+    }
+
+    /** Removes [model]'s vision projector association (and the file, unless another model uses it). */
+    fun removeMmproj(model: LocalModel) {
+        val st = _state.value
+        if (st.isTranslating || st.isPreparingImage) return
+        val name = st.paramsFor(model).mmproj ?: return
+        viewModelScope.launch {
+            updateParams(model) { it.copy(mmproj = null) }
+            flushParams(model)
+            if (_state.value.isLoaded(model)) {
+                engine.releaseMmproj()
+                clearImageInternal()
+            }
+            deleteMmprojIfUnused(name, exceptModel = null)
+            refreshMmprojFiles()
+            _state.update { it.copy(message = str(R.string.msg_mmproj_removed)) }
+        }
+    }
+
+    private suspend fun deleteMmprojIfUnused(name: String, exceptModel: String?) {
+        val usedElsewhere = _state.value.params.any { (model, p) -> model != exceptModel && p.mmproj == name }
+        if (!usedElsewhere) withContext(Dispatchers.IO) { repository.deleteMmproj(name) }
+        refreshMmprojFiles()
+    }
+
+    /** Writes [model]'s parameters now instead of after the debounce (structural changes). */
+    private suspend fun flushParams(model: LocalModel) {
+        val key = model.fileName
+        saveJobs.remove(key)?.cancel()
+        val params = _state.value.paramsFor(model)
+        withContext(NonCancellable) { paramsStore.save(key, params) }
+    }
+
+    // ------------------------------------------------------------------ image translation
+
+    /** Content URI for the system camera to write a photo to (TakePicture contract). */
+    fun cameraCaptureUri(): Uri {
+        val app = getApplication<Application>()
+        val file = cameraFile().apply {
+            parentFile?.mkdirs()
+            delete()
+        }
+        return FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
+    }
+
+    private fun cameraFile(): File = File(getApplication<Application>().cacheDir, "camera/capture.jpg")
+
+    fun onCameraResult(success: Boolean, uri: Uri?) {
+        if (success && uri != null) pickImage(uri, fromCamera = true) else cameraFile().delete()
+    }
+
+    /**
+     * Decodes [uri] to the size the vision encoder needs (off the main thread), shows its
+     * thumbnail and starts translating it.
+     */
+    fun pickImage(uri: Uri, fromCamera: Boolean = false) {
+        val st = _state.value
+        val loaded = st.loaded
+        val model = st.loadedModel
+        if (loaded == null || model == null || !st.imageSupported || st.isTranslating) {
+            if (fromCamera) cameraFile().delete()
+            return
+        }
+        val sampling = st.paramsFor(model).sampling(st.profileFor(model))
+        val budget = ImagePrep.imageTokenBudget(loaded.params.nCtx, sampling.maxTokens)
+        imageJob?.cancel()
+        imageJob = viewModelScope.launch {
+            _state.update { it.copy(isPreparingImage = true, message = null) }
+            try {
+                val prepared = ImageLoader.load(getApplication(), uri, budget.toLong() * ImagePrep.PIXELS_PER_TOKEN)
+                pendingImage = prepared.image
+                setOutput("")
+                _state.update {
+                    it.copy(imageThumb = prepared.thumbnail.asImageBitmap(), isPreparingImage = false, stats = null)
+                }
+                translate()
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                _state.update { it.copy(message = str(R.string.msg_image_failed, t.message ?: t.javaClass.simpleName)) }
+            } finally {
+                _state.update { it.copy(isPreparingImage = false) }
+                if (fromCamera) withContext(NonCancellable + Dispatchers.IO) { cameraFile().delete() }
+            }
+        }
+    }
+
+    fun clearImage() {
+        if (_state.value.isTranslating) return
+        clearImageInternal()
+        setOutput("")
+        _state.update { it.copy(stats = null) }
+    }
+
+    private fun clearImageInternal() {
+        imageJob?.cancel()
+        imageJob = null
+        pendingImage = null
+        if (_state.value.imageThumb != null || _state.value.isPreparingImage) {
+            _state.update { it.copy(imageThumb = null, isPreparingImage = false) }
         }
     }
 
@@ -285,6 +490,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setTarget(code: String) = _state.update { it.copy(targetCode = code) }
     fun setInput(text: String) = _state.update { it.copy(input = text) }
     fun clearInput() {
+        clearImageInternal()
         setOutput("")
         _state.update { it.copy(input = "", stats = null) }
     }
@@ -294,8 +500,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val st = _state.value
         val out = _output.value
         val (src, tgt) = LanguageRules.swap(st.activeProfile, st.sourceCode, st.targetCode)
-        // Carry the previous translation over as the new input, like mainstream translators.
-        val newInput = if (out.isNotBlank() && !st.isTranslating) out else st.input
+        // Carry the previous translation over as the new input, like mainstream translators
+        // (not in image mode: the image stays the source).
+        val newInput = if (out.isNotBlank() && !st.isTranslating && !st.hasImage) out else st.input
         if (newInput != st.input) setOutput("")
         _state.update { it.copy(sourceCode = src, targetCode = tgt, input = newInput) }
     }
@@ -306,13 +513,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val model = st.loadedModel ?: return
         val profile = st.profileFor(model)
         val sampling = st.paramsFor(model).sampling(profile)
-        val userPrompt = profile.buildUserPrompt(st.sourceLanguage, st.targetLanguage, st.input)
+        val image = pendingImage?.takeIf { st.hasImage }
+        val mmproj = st.mmprojFor(model)?.let { repository.mmprojFile(it) }
+        if (image != null && mmproj == null) return
+        val events = if (image != null && mmproj != null) {
+            val loaded = st.loaded ?: return
+            val prompt = profile.buildImagePrompt(st.sourceLanguage, st.targetLanguage, LlamaSession.MEDIA_MARKER)
+            val budget = ImagePrep.imageTokenBudget(loaded.params.nCtx, sampling.maxTokens)
+            engine.translateImage(profile, mmproj, budget, prompt, image, sampling)
+        } else {
+            engine.translate(profile, profile.buildUserPrompt(st.sourceLanguage, st.targetLanguage, st.input), sampling)
+        }
         translateJob?.cancel()
         translateJob = viewModelScope.launch {
             setOutput("")
             _state.update { it.copy(isTranslating = true, stats = null, message = null) }
             try {
-                engine.translate(profile, userPrompt, sampling).throttleLatest(OUTPUT_FRAME_MS).collect { ev ->
+                events.throttleLatest(OUTPUT_FRAME_MS).collect { ev ->
                     when (ev) {
                         is GenerationEvent.Partial -> setOutput(ev.text)
                         is GenerationEvent.Done -> {
@@ -328,7 +545,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             } catch (t: Throwable) {
-                if (t is kotlinx.coroutines.CancellationException) throw t
+                if (t is CancellationException) throw t
                 _state.update { it.copy(isTranslating = false, message = str(R.string.msg_translate_failed, t.message ?: "")) }
             } finally {
                 _state.update { it.copy(isTranslating = false) }
