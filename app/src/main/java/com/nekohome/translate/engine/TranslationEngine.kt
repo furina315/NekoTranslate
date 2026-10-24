@@ -94,7 +94,7 @@ class TranslationEngine(context: Context) {
     /** Probes the GPU (once) and returns its state, consuming a crash mark left by a previous run. */
     suspend fun gpuState(): GpuState = withContext(dispatcher) {
         LlamaBackend.init(appContext)
-        gpuGuard.state(LlamaBackend.gpuProbe(appContext))
+        gpuGuard.state(gpuGuard.probe { LlamaBackend.gpuProbe(appContext) })
     }
 
     /**

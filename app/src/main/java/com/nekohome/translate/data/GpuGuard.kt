@@ -65,6 +65,25 @@ class GpuGuard(private val kv: GpuKeyValue, private val llamaVersion: String) {
         kv.put(RESULT, null)
     }
 
+    /**
+     * Runs the one-time GPU probe (dlopen of the vendor OpenCL driver + device query) under its own
+     * crash mark. If a previous probe never returned, the probe is skipped for this llama.cpp build
+     * and "" (no GPU) is returned, so a driver that crashes on load cannot crash every app start.
+     */
+    fun probe(block: () -> String): String {
+        if (kv.getBoolean(PROBE_PENDING)) {
+            kv.put(PROBE_PENDING, false)
+            kv.put(PROBE_CRASHED, llamaVersion)
+        }
+        if (kv.getString(PROBE_CRASHED) == llamaVersion) return ""
+        kv.put(PROBE_PENDING, true)
+        try {
+            return block()
+        } finally {
+            kv.put(PROBE_PENDING, false)
+        }
+    }
+
     fun begin() = kv.put(PENDING, true)
     fun end() = kv.put(PENDING, false)
 
@@ -82,6 +101,8 @@ class GpuGuard(private val kv: GpuKeyValue, private val llamaVersion: String) {
     companion object {
         const val CRASH = "crash"
         private const val PENDING = "gpu_init_pending"
+        private const val PROBE_PENDING = "gpu_probe_pending"
+        private const val PROBE_CRASHED = "gpu_probe_crashed"
         private const val RESULT_KEY = "gpu_selftest_key"
         private const val RESULT = "gpu_selftest_result"
         private const val PASS = "pass"

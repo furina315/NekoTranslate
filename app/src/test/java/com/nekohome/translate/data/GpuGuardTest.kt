@@ -86,4 +86,20 @@ class GpuGuardTest {
         g.recordSelfTest(dev, "")
         assertTrue(g.state(dev).usable)
     }
+
+    @Test
+    fun probeThatNeverReturnedIsSkippedUntilTheNextBuild() {
+        val kv = MapKv()
+        assertEquals(dev, GpuGuard(kv, "b1").probe { dev })
+        assertFalse(kv.getBoolean("gpu_probe_pending"))
+        // Simulate a crash inside the probe: the mark stays set.
+        kv.put("gpu_probe_pending", true)
+        var probed = false
+        assertEquals("", GpuGuard(kv, "b1").probe { probed = true; dev })
+        assertFalse(probed)
+        assertEquals("", GpuGuard(kv, "b1").probe { probed = true; dev })
+        assertFalse(probed)
+        // An app update (new llama.cpp build) tries again.
+        assertEquals(dev, GpuGuard(kv, "b2").probe { dev })
+    }
 }
