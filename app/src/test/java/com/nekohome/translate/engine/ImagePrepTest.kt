@@ -9,10 +9,10 @@ class ImagePrepTest {
     @Test
     fun largePhotoIsCappedAtMaxEdgeKeepingAspect() {
         val t = ImagePrep.targetSize(ImageSize(4000, 3000))
-        assertEquals(ImageSize(1536, 1152), t)
+        assertEquals(ImageSize(1024, 768), t)
         val portrait = ImagePrep.targetSize(ImageSize(3024, 4032))
-        assertEquals(1536, portrait.height)
-        assertEquals(1152, portrait.width)
+        assertEquals(1024, portrait.height)
+        assertEquals(768, portrait.width)
     }
 
     @Test
@@ -23,11 +23,11 @@ class ImagePrepTest {
 
     @Test
     fun pixelBudgetShrinksButNotBelowMinEdge() {
-        // 1536x1536 = 2.36 MP over a 1 MP budget -> about 1024x1024.
-        val t = ImagePrep.targetSize(ImageSize(3000, 3000), maxPixels = 1024L * 1024)
-        assertTrue(t.pixels <= 1024L * 1024 + 2048)
+        // 1024x1024 = 1 MP over a 0.5 MP budget -> about 724x724.
+        val t = ImagePrep.targetSize(ImageSize(3000, 3000), maxPixels = 512L * 1024)
+        assertTrue(t.pixels <= 512L * 1024 + 2048)
         assertEquals(t.width, t.height)
-        assertTrue(t.width in 1020..1024)
+        assertTrue(t.width in 720..725)
         // A tiny budget stops at a 512 px longest edge.
         val floor = ImagePrep.targetSize(ImageSize(4000, 2000), maxPixels = 10_000)
         assertEquals(ImageSize(512, 256), floor)
@@ -35,14 +35,30 @@ class ImagePrepTest {
 
     @Test
     fun tokenBudgetFollowsContext() {
-        assertEquals(2048, ImagePrep.imageTokenBudget(nCtx = 4096, maxGenTokens = 1024))
-        assertEquals(2048, ImagePrep.imageTokenBudget(nCtx = 16384, maxGenTokens = 1024))
+        assertEquals(1024, ImagePrep.imageTokenBudget(nCtx = 4096, maxGenTokens = 1024))
+        assertEquals(1024, ImagePrep.imageTokenBudget(nCtx = 16384, maxGenTokens = 1024))
         // 2048 ctx: generation capped at half the context -> 2048 - 1024 - 256.
         assertEquals(768, ImagePrep.imageTokenBudget(nCtx = 2048, maxGenTokens = 1024))
         assertEquals(256, ImagePrep.imageTokenBudget(nCtx = 512, maxGenTokens = 1024))
-        // Default target (4096 ctx, 1024 tokens) fits a 1536x1152 photo: 48 x 36 = 1728 tokens.
-        val t = ImagePrep.targetSize(ImageSize(4000, 3000), maxPixels = 2048L * ImagePrep.PIXELS_PER_TOKEN)
-        assertEquals(ImageSize(1536, 1152), t)
+        // Default target (4096 ctx, 1024 tokens): a 4:3 photo becomes 1024x768 = 32 x 24 = 768 tokens.
+        val budget = ImagePrep.imageTokenBudget(nCtx = 4096, maxGenTokens = 1024)
+        val t = ImagePrep.targetSize(ImageSize(4000, 3000), maxPixels = budget.toLong() * ImagePrep.PIXELS_PER_TOKEN)
+        assertEquals(ImageSize(1024, 768), t)
+        // The largest image MAX_EDGE allows always fits the token cap.
+        assertTrue(ImagePrep.MAX_EDGE.toLong() * ImagePrep.MAX_EDGE <= ImagePrep.MAX_IMAGE_TOKENS.toLong() * ImagePrep.PIXELS_PER_TOKEN)
+    }
+
+    @Test
+    fun imageTokensPlusGenerationFitTheContext() {
+        // Image budget + prompt reserve + generation never exceeds the context for sane sizes.
+        for (nCtx in listOf(1024, 2048, 4096, 8192, 32768)) {
+            for (gen in listOf(256, 512, 1024, 2048)) {
+                val img = ImagePrep.imageTokenBudget(nCtx, gen)
+                val effGen = minOf(gen, nCtx / 2)
+                assertTrue("ctx=$nCtx gen=$gen img=$img", img + effGen + 256 <= nCtx)
+                assertTrue(img <= ImagePrep.MAX_IMAGE_TOKENS)
+            }
+        }
     }
 
     @Test

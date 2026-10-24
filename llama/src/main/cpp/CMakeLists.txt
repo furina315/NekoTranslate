@@ -60,6 +60,20 @@ set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_SRC} build-llama)
 
+# Vision encoder speed-up: compile a patched copy of tools/mtmd/clip.cpp that puts the mmproj's
+# quantized matmul weights in ggml's repacked CPU buffers (see patch-clip-repack.cmake).
+option(LT_CLIP_REPACK "Patch clip.cpp to use repacked (i8mm/dotprod) CPU weights" ON)
+if (LT_CLIP_REPACK)
+    include(${CMAKE_CURRENT_LIST_DIR}/patch-clip-repack.cmake)
+    lt_patch_clip(${LLAMA_SRC} LT_CLIP_PATCHED)
+    if (LT_CLIP_PATCHED)
+        get_target_property(LT_MTMD_SOURCES mtmd SOURCES)
+        list(TRANSFORM LT_MTMD_SOURCES REPLACE "^clip\\.cpp$" "${LT_CLIP_PATCHED}")
+        set_property(TARGET mtmd PROPERTY SOURCES ${LT_MTMD_SOURCES})
+        message(STATUS "NekoTranslate: mtmd uses patched clip.cpp (${LT_CLIP_PATCHED})")
+    endif()
+endif()
+
 add_library(${CMAKE_PROJECT_NAME} SHARED
         llama_jni.cpp)
 

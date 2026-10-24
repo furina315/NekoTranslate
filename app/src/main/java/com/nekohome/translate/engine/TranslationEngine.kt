@@ -11,6 +11,9 @@ import com.nekohome.translate.llama.LoadParams
 import com.nekohome.translate.llama.ModelInfo
 import com.nekohome.translate.llama.RgbImage
 import com.nekohome.translate.llama.SamplingParams
+import com.nekohome.translate.llama.StageListener
+import android.os.SystemClock
+import android.util.Log
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
@@ -22,7 +25,19 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.Executors
 
+/** What an image translation is doing before its first token streams. */
+enum class ImageStage {
+    /** First use: the vision projector (mmproj) is being loaded. */
+    LOADING_MMPROJ,
+    /** Vision encoder running on the image. */
+    ENCODING,
+    /** Image embeddings and prompt going through the language model. */
+    PREFILL,
+}
+
 sealed interface GenerationEvent {
+    /** Image translation progress; [atMs] is SystemClock.elapsedRealtime() when it began. */
+    data class Stage(val stage: ImageStage, val atMs: Long) : GenerationEvent
     /** Text generated so far, already cleaned (think block / stop strings removed). */
     data class Partial(val text: String) : GenerationEvent
     data class Done(val text: String, val stats: GenerationStats) : GenerationEvent
@@ -92,13 +107,24 @@ class TranslationEngine(context: Context) {
         mmprojKey = null
     }
 
-    /** Loads [mmproj] into [s] unless that exact projector / budget is already loaded. Engine thread only. */
-    private fun ensureMmproj(s: LlamaSession, mmproj: File, imageMaxTokens: Int) {
+    /**
+     * Loads [mmproj] into [s] unless that exact projector / budget is already loaded; calls
+     * [onLoading] first when it actually has to load. Engine thread only.
+     *
+     * Kept lazy on purpose: the projector costs ~0.4–0.7 GB more RAM (weights + encoder compute
+     * buffers) that text-only users should not pay, and loading it takes well under a second.
+     */
+    private fun ensureMmproj(s: LlamaSession, mmproj: File, imageMaxTokens: Int, onLoading: () -> Unit) {
         val key = MmprojKey(mmproj.absolutePath, imageMaxTokens)
         if (mmprojKey == key && s.hasMmproj) return
+        onLoading()
         releaseMmprojInternal()
-        val threads = loaded?.params?.nThreads ?: LoadParams.defaultThreads()
+        // The vision encoder is compute bound: it gets the prefill (performance core) thread count.
+        val threads = loaded?.params?.nThreadsBatch ?: LoadParams.defaultBatchThreads()
+        val t0 = SystemClock.elapsedRealtime()
         s.loadMmproj(mmproj.absolutePath, threads, imageMaxTokens)
+        Log.i(LOG_TAG, "mmproj ${mmproj.name} loaded in ${SystemClock.elapsedRealtime() - t0} ms " +
+            "(threads=$threads, image_max_tokens=$imageMaxTokens)")
         mmprojKey = key
     }
 
@@ -145,12 +171,29 @@ class TranslationEngine(context: Context) {
         sampling: SamplingParams = profile.sampling,
     ): Flow<GenerationEvent> = channelFlow {
         val s = session ?: throw IllegalStateException("No model loaded")
-        ensureMmproj(s, mmproj, imageMaxTokens)
+        val t0 = SystemClock.elapsedRealtime()
+        fun stage(st: ImageStage) {
+            trySend(GenerationEvent.Stage(st, SystemClock.elapsedRealtime()))
+        }
+        ensureMmproj(s, mmproj, imageMaxTokens) { stage(ImageStage.LOADING_MMPROJ) }
         val prompt = formatPrompt(s, profile.chatFormat, userPrompt)
         val raw = StringBuilder()
         val cleaner = OutputCleaner(profile.stopStrings)
         var hitStop = false
-        val stats = s.generateWithImage(prompt, image, sampling) { piece ->
+        var firstTokenLogged = false
+        val onStage = StageListener { st ->
+            when (st) {
+                StageListener.STAGE_ENCODE -> stage(ImageStage.ENCODING)
+                StageListener.STAGE_PREFILL -> stage(ImageStage.PREFILL)
+                // STAGE_GENERATE: the prefill label stays until the first token replaces it.
+            }
+        }
+        Log.i(LOG_TAG, "image ${image.width}x${image.height}, image_max_tokens=$imageMaxTokens")
+        val stats = s.generateWithImage(prompt, image, sampling, onStage) { piece ->
+            if (!firstTokenLogged) {
+                firstTokenLogged = true
+                Log.i(LOG_TAG, "first token after ${SystemClock.elapsedRealtime() - t0} ms")
+            }
             raw.append(piece)
             val cleaned = cleaner.clean(raw)
             hitStop = cleaned.hitStop
@@ -160,6 +203,11 @@ class TranslationEngine(context: Context) {
         val finalText = cleaner.clean(raw).text
         send(GenerationEvent.Done(finalText, stats))
     }.buffer(Channel.CONFLATED).flowOn(dispatcher)
+
+    private companion object {
+        /** Image translation timings: `adb logcat -s NekoImg`. */
+        const val LOG_TAG = "NekoImg"
+    }
 
     private fun formatPrompt(s: LlamaSession, format: ChatFormat, userPrompt: String): String = when (format) {
         is ChatFormat.Wrapper -> format.template.replace("{prompt}", userPrompt)

@@ -50,8 +50,18 @@ data class ModelParams(
         )
     }
 
-    fun loadParams(defaultThreads: Int = LoadParams.defaultThreads()): LoadParams =
-        LoadParams(nCtx = nCtx ?: DEFAULT_CONTEXT, nThreads = nThreads ?: defaultThreads)
+    /**
+     * The user's thread count, when set, applies to generation and to prefill / image encoding
+     * alike; otherwise each uses its own default (see LoadParams).
+     */
+    fun loadParams(
+        defaultThreads: Int = LoadParams.defaultThreads(),
+        defaultBatchThreads: Int = LoadParams.defaultBatchThreads(),
+    ): LoadParams = LoadParams(
+        nCtx = nCtx ?: DEFAULT_CONTEXT,
+        nThreads = nThreads ?: defaultThreads,
+        nThreadsBatch = nThreads ?: defaultBatchThreads,
+    )
 
     /** Drops every sampling / load override; keeps the profile choice and custom template. */
     fun resetToDefaults(): ModelParams = copy(
@@ -67,7 +77,8 @@ data class ModelParams(
 
         /** Context / thread changes only take effect after the model is loaded again. */
         fun needsReload(loaded: LoadParams, wanted: LoadParams): Boolean =
-            loaded.nCtx != wanted.nCtx || loaded.nThreads != wanted.nThreads
+            loaded.nCtx != wanted.nCtx || loaded.nThreads != wanted.nThreads ||
+                loaded.nThreadsBatch != wanted.nThreadsBatch
     }
 }
 

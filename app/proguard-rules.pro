@@ -1,10 +1,14 @@
 # NekoTranslate release (R8) rules.
-# JNI bridge rules (LlamaNative natives, TokenCallback.onToken called from C++) ship with :llama
+# JNI bridge rules (LlamaNative natives, TokenCallback.onToken / StageListener.onStage called from C++) ship with :llama
 # in llama/consumer-rules.pro and are applied automatically; repeated here defensively.
 -keep class com.nekohome.translate.llama.LlamaNative { *; }
 -keep interface com.nekohome.translate.llama.TokenCallback { *; }
 -keepclassmembers class * implements com.nekohome.translate.llama.TokenCallback {
     boolean onToken(byte[]);
+}
+-keep interface com.nekohome.translate.llama.StageListener { *; }
+-keepclassmembers class * implements com.nekohome.translate.llama.StageListener {
+    void onStage(int);
 }
 
 # ViewModels are created reflectively by the default ViewModelProvider factory.

@@ -10,3 +10,9 @@
 -keepclassmembers class * implements com.nekohome.translate.llama.TokenCallback {
     boolean onToken(byte[]);
 }
+
+# Same for the image stage listener: GetMethodID("onStage", "(I)V").
+-keep interface com.nekohome.translate.llama.StageListener { *; }
+-keepclassmembers class * implements com.nekohome.translate.llama.StageListener {
+    void onStage(int);
+}

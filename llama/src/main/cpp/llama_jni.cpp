@@ -33,6 +33,9 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+// Per-stage timings of image translation (`adb logcat -s NekoImg`).
+#define IMG_TAG "NekoImg"
+#define LOGIMG(...) __android_log_print(ANDROID_LOG_INFO, IMG_TAG, __VA_ARGS__)
 
 namespace {
 
@@ -48,6 +51,11 @@ struct Session {
     int32_t n_batch = 512;
     uint32_t eval_nodes = 0;           // node counter for mtmd_eval_cb (engine thread only)
 };
+
+// Image translation stages reported to StageListener.onStage (keep in sync with LlamaNative.kt).
+constexpr int LT_STAGE_ENCODE   = 1;   // vision encoder running on the image
+constexpr int LT_STAGE_PREFILL  = 2;   // image embeddings + prompt going through the text model
+constexpr int LT_STAGE_GENERATE = 3;   // prompt done, first token being sampled
 
 bool g_backend_ready = false;
 bool g_mtmd_log_ready = false;
@@ -316,7 +324,7 @@ JNIEXPORT jlong JNICALL
 Java_com_nekohome_translate_llama_LlamaNative_nativeLoad(
         JNIEnv * env, jobject,
         jbyteArray jpath, jint fd,
-        jint n_ctx, jint n_threads, jint n_batch,
+        jint n_ctx, jint n_threads, jint n_threads_batch, jint n_batch,
         jboolean use_mmap) {
     if (!g_backend_ready) {
         LOGE("nativeLoad called before nativeInitBackend");
@@ -351,10 +359,14 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeLoad(
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx           = static_cast<uint32_t>(std::max(256, static_cast<int>(n_ctx)));
+    // n_ubatch = n_batch: one llama_decode of up to n_batch prompt tokens / image embeddings is a
+    // single graph (big matmuls). Qwen-VL images are decoded causally with explicit M-RoPE
+    // positions, so mtmd may split an image chunk across ubatches without changing the result.
     cparams.n_batch         = static_cast<uint32_t>(std::max(32, static_cast<int>(n_batch)));
     cparams.n_ubatch        = cparams.n_batch;
+    // Generation is memory-bandwidth bound, prefill compute bound: separate thread counts.
     cparams.n_threads       = std::max(1, static_cast<int>(n_threads));
-    cparams.n_threads_batch = cparams.n_threads;
+    cparams.n_threads_batch = std::max(1, static_cast<int>(n_threads_batch));
     cparams.no_perf         = false;
 
     auto * session = new Session();
@@ -371,7 +383,8 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeLoad(
         return 0;
     }
     session->ctx = ctx;
-    LOGI("Model loaded: n_ctx=%u threads=%d batch=%d", llama_n_ctx(ctx), cparams.n_threads, cparams.n_batch);
+    LOGI("Model loaded: n_ctx=%u threads=%d threads_batch=%d batch=%d ubatch=%d", llama_n_ctx(ctx),
+         cparams.n_threads, cparams.n_threads_batch, cparams.n_batch, cparams.n_ubatch);
     return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
 }
 
@@ -592,6 +605,8 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeMmprojLoad(
     }
     s->mtmd = m;
     LOGI("mmproj loaded in %.0f ms (mrope=%d)", now_ms() - t0, mtmd_decode_use_mrope(m) ? 1 : 0);
+    LOGIMG("mmproj load %.0f ms (threads=%d, image_max_tokens=%d, non_causal=%d)", now_ms() - t0,
+           mp.n_threads, image_max_tokens, mtmd_decode_use_non_causal(m, nullptr) ? 1 : 0);
     return 0;
 }
 
@@ -617,11 +632,26 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerateImage(
         jint max_tokens,
         jfloat temperature, jfloat top_p, jint top_k, jfloat min_p,
         jfloat repeat_penalty, jint repeat_last_n, jint seed,
-        jobject callback) {
+        jobject callback, jobject stage_listener) {
     Session * s = as_session(handle);
     if (s == nullptr) return make_result(env, -1, 0, 0, 0, 0, 4);
     s->cancel.store(false);
     s->eval_nodes = 0;
+    const double t_start = now_ms();
+
+    // Stage notifications for the UI: StageListener.onStage(int), see LlamaNative.kt.
+    jmethodID on_stage = nullptr;
+    if (stage_listener != nullptr) {
+        jclass st_cls = env->GetObjectClass(stage_listener);
+        on_stage = env->GetMethodID(st_cls, "onStage", "(I)V");
+        if (on_stage == nullptr) env->ExceptionClear();
+        env->DeleteLocalRef(st_cls);
+    }
+    auto stage = [&](int id) {
+        if (on_stage == nullptr) return;
+        env->CallVoidMethod(stage_listener, on_stage, static_cast<jint>(id));
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    };
     if (s->mtmd == nullptr) return make_result(env, -5, 0, 0, 0, 0, 4);
 
     jclass cb_cls = env->GetObjectClass(callback);
@@ -660,8 +690,12 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerateImage(
 
     mtmd_input_chunks * chunks = mtmd_input_chunks_init();
     const mtmd_bitmap * bitmaps[1] = { bitmap };
+    // mtmd_tokenize also preprocesses the image (resize / normalise for the encoder).
+    stage(LT_STAGE_ENCODE);
+    const double t_tok0 = now_ms();
     const int32_t tok_rc = mtmd_tokenize(s->mtmd, chunks, &text, bitmaps, 1);
     mtmd_bitmap_free(bitmap);
+    const double tokenize_ms = now_ms() - t_tok0;
     if (tok_rc != 0) {
         LOGE("mtmd_tokenize failed: %d", tok_rc);
         mtmd_input_chunks_free(chunks);
@@ -679,28 +713,51 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerateImage(
     llama_memory_clear(llama_get_memory(s->ctx), true);
     llama_perf_context_reset(s->ctx);
 
-    // ---- evaluate chunk by chunk (text: llama_decode; image: CLIP encode + embedding decode), so a
-    // stop request is honoured between chunks as well as inside each one (abort_cb / mtmd_eval_cb).
+    // ---- evaluate chunk by chunk: text via llama_decode, images as CLIP encode (STAGE_ENCODE) then
+    // embedding decode (STAGE_PREFILL). A stop request is honoured between chunks as well as
+    // inside each one (abort_cb / mtmd_eval_cb).
     const double t_prompt0 = now_ms();
     const size_t n_chunks = mtmd_input_chunks_size(chunks);
     llama_pos n_past = 0;
+    double encode_ms = 0, image_decode_ms = 0, text_ms = 0;
+    int n_image_tokens = 0;
+    auto cancelled_result = [&]() {
+        mtmd_input_chunks_free(chunks);
+        LOGIMG("cancelled after %.0f ms", now_ms() - t_start);
+        return make_result(env, 1, n_prompt, now_ms() - t_prompt0, 0, 0, 3);
+    };
     for (size_t i = 0; i < n_chunks; ++i) {
-        if (s->cancel.load()) {
-            mtmd_input_chunks_free(chunks);
-            return make_result(env, 1, n_prompt, now_ms() - t_prompt0, 0, 0, 3);
-        }
+        if (s->cancel.load()) return cancelled_result();
         const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
         const bool is_image = mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_TEXT;
+        const bool last = i == n_chunks - 1;
         llama_pos new_n_past = n_past;
-        const int32_t rc = mtmd_helper_eval_chunk_single(s->mtmd, s->ctx, chunk, n_past, /*seq_id*/ 0,
-                                                         s->n_batch, /*logits_last*/ i == n_chunks - 1, &new_n_past);
-        // A cancelled encode returns "success" with a partial result: check the flag first.
-        if (s->cancel.load()) {
-            mtmd_input_chunks_free(chunks);
-            return make_result(env, 1, n_prompt, now_ms() - t_prompt0, 0, 0, 3);
+        int32_t rc = 0;
+        if (!is_image) {
+            const double t0 = now_ms();
+            rc = mtmd_helper_eval_chunk_single(s->mtmd, s->ctx, chunk, n_past, /*seq_id*/ 0,
+                                               s->n_batch, /*logits_last*/ last, &new_n_past);
+            text_ms += now_ms() - t0;
+        } else {
+            n_image_tokens += static_cast<int>(mtmd_input_chunk_get_n_tokens(chunk));
+            stage(LT_STAGE_ENCODE);
+            double t0 = now_ms();
+            rc = mtmd_encode_chunk(s->mtmd, chunk);
+            encode_ms += now_ms() - t0;
+            // A cancelled encode returns "success" with a partial result: check the flag first.
+            if (s->cancel.load()) return cancelled_result();
+            if (rc == 0) {
+                stage(LT_STAGE_PREFILL);
+                t0 = now_ms();
+                rc = mtmd_helper_decode_image_chunk(s->mtmd, s->ctx, chunk, mtmd_get_output_embd(s->mtmd),
+                                                    n_past, /*seq_id*/ 0, s->n_batch, &new_n_past,
+                                                    nullptr, nullptr);
+                image_decode_ms += now_ms() - t0;
+            }
         }
+        if (s->cancel.load()) return cancelled_result();
         if (rc != 0) {
-            LOGE("mtmd_helper_eval_chunk_single(%zu, %s) rc=%d", i, is_image ? "image" : "text", rc);
+            LOGE("image prompt chunk %zu (%s) failed: rc=%d", i, is_image ? "image" : "text", rc);
             mtmd_input_chunks_free(chunks);
             return make_result(env, is_image ? -7 : -4, n_prompt, now_ms() - t_prompt0, 0, 0, 4);
         }
@@ -708,13 +765,19 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerateImage(
     }
     mtmd_input_chunks_free(chunks);
     const double prompt_ms = now_ms() - t_prompt0;
-    LOGI("image prompt evaluated: %d tokens, n_pos %d, %zu chunks, %.0f ms", n_prompt, static_cast<int>(n_past), n_chunks, prompt_ms);
+    LOGIMG("image %dx%d -> %d image tokens (%d prompt tokens, %zu chunks): tokenize %.0f ms, "
+           "encode %.0f ms, image prefill %.0f ms, text prefill %.0f ms, batch %d",
+           width, height, n_image_tokens, n_prompt, n_chunks, tokenize_ms, encode_ms, image_decode_ms,
+           text_ms, s->n_batch);
 
+    stage(LT_STAGE_GENERATE);
     const llama_vocab * vocab = llama_model_get_vocab(s->model);
     llama_sampler * smpl = make_sampler(vocab, temperature, top_p, top_k, min_p, repeat_penalty, repeat_last_n, seed);
     const GenResult g = generate_loop(env, s, smpl, callback, on_token, n_prompt, max_tokens);
     llama_sampler_free(smpl);
     log_perf(s, "image", n_prompt, prompt_ms, g);
+    LOGIMG("generate %d tok in %.0f ms (%.1f tok/s); total %.0f ms", g.n_gen, g.gen_ms,
+           g.gen_ms > 0 ? g.n_gen * 1000.0 / g.gen_ms : 0.0, now_ms() - t_start);
     return make_result(env, g.status, n_prompt, prompt_ms, g.n_gen, g.gen_ms, g.reason);
 }
 

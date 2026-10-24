@@ -19,6 +19,8 @@ class ModelParamsTest {
         assertEquals(hy.sampling, p.sampling(hy))
         assertEquals(ModelParams.DEFAULT_CONTEXT, p.loadParams(defaultThreads = 4).nCtx)
         assertEquals(4, p.loadParams(defaultThreads = 4).nThreads)
+        // Without an override, prefill / image encode get their own (performance core) default.
+        assertEquals(8, p.loadParams(defaultThreads = 6, defaultBatchThreads = 8).nThreadsBatch)
     }
 
     @Test
@@ -29,7 +31,11 @@ class ModelParamsTest {
         assertEquals(5, s.topK)
         assertEquals(512, s.maxTokens)
         assertEquals(hy.sampling.topP, s.topP) // untouched
-        assertEquals(LoadParams(nCtx = 8192, nThreads = 3), p.loadParams(defaultThreads = 6))
+        // The user's thread count applies to generation and batch work alike.
+        assertEquals(
+            LoadParams(nCtx = 8192, nThreads = 3, nThreadsBatch = 3),
+            p.loadParams(defaultThreads = 6, defaultBatchThreads = 8),
+        )
     }
 
     @Test
@@ -58,6 +64,7 @@ class ModelParamsTest {
         assertFalse(ModelParams.needsReload(LoadParams(4096, 4), LoadParams(4096, 4)))
         assertTrue(ModelParams.needsReload(LoadParams(4096, 4), LoadParams(8192, 4)))
         assertTrue(ModelParams.needsReload(LoadParams(4096, 4), LoadParams(4096, 6)))
+        assertTrue(ModelParams.needsReload(LoadParams(4096, 4, 8), LoadParams(4096, 4, 6)))
     }
 
     @Test

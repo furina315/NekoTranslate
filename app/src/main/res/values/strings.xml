@@ -35,6 +35,10 @@
     <string name="translate_image_remove">移除图片</string>
     <string name="translate_image_preparing">正在处理图片…</string>
     <string name="translate_image_no_camera">没有可用的相机应用</string>
+    <string name="translate_stage_loading_mmproj">加载视觉模型…</string>
+    <string name="translate_stage_encoding">编码图片…</string>
+    <string name="translate_stage_prefill">预填充…</string>
+    <string name="translate_stage_elapsed">%1$s %2$d 秒</string>
 
     <!-- 模型页 -->
     <string name="models_title">模型</string>

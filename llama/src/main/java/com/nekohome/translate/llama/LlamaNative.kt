@@ -20,6 +20,7 @@ internal object LlamaNative {
         fd: Int,
         nCtx: Int,
         nThreads: Int,
+        nThreadsBatch: Int,
         nBatch: Int,
         useMmap: Boolean,
     ): Long
@@ -65,6 +66,7 @@ internal object LlamaNative {
     /**
      * Like [nativeGenerate]; [prompt] contains the media marker and [rgb] is packed RGB888
      * (`width * height * 3` bytes). Same result layout and [TokenCallback] contract.
+     * [stageListener] is told when encoding / prefill / generation starts (on this thread).
      */
     external fun nativeGenerateImage(
         handle: Long,
@@ -81,10 +83,28 @@ internal object LlamaNative {
         repeatLastN: Int,
         seed: Int,
         callback: TokenCallback,
+        stageListener: StageListener?,
     ): DoubleArray
 }
 
 /** Receives complete UTF-8 chunks of generated text. Return false to stop generation. */
 fun interface TokenCallback {
     fun onToken(utf8: ByteArray): Boolean
+}
+
+/**
+ * Progress of an image generation, called on the engine thread with one of the STAGE_* values
+ * (llama_jni.cpp: LT_STAGE_*). Keep it cheap: it runs between native compute steps.
+ */
+fun interface StageListener {
+    fun onStage(stage: Int)
+
+    companion object {
+        /** Vision encoder running on the image (includes image preprocessing). */
+        const val STAGE_ENCODE = 1
+        /** Image embeddings and prompt text going through the language model. */
+        const val STAGE_PREFILL = 2
+        /** Prompt done; tokens are about to stream. */
+        const val STAGE_GENERATE = 3
+    }
 }

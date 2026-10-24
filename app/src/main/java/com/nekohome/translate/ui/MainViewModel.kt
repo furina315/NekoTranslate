@@ -23,6 +23,7 @@ import com.nekohome.translate.data.SettingsRepository
 import com.nekohome.translate.engine.GenerationEvent
 import com.nekohome.translate.engine.ImageLoader
 import com.nekohome.translate.engine.ImagePrep
+import com.nekohome.translate.engine.ImageStage
 import com.nekohome.translate.engine.LoadedModel
 import com.nekohome.translate.engine.MemoryStats
 import com.nekohome.translate.engine.TranslationEngine
@@ -89,6 +90,10 @@ data class MainUiState(
     /** Thumbnail of the image to translate; the pixels themselves live in the ViewModel. */
     val imageThumb: ImageBitmap? = null,
     val isPreparingImage: Boolean = false,
+    /** Image translation progress before the first token (shown in the output card), or null. */
+    val imageStage: ImageStage? = null,
+    /** SystemClock.elapsedRealtime() when [imageStage] began. */
+    val imageStageSinceMs: Long = 0L,
 ) {
     val selectedModel: LocalModel? get() = models.firstOrNull { it.file.absolutePath == selectedPath }
     val loadedModel: LocalModel? get() = loaded?.let { l -> models.firstOrNull { it.file.absolutePath == l.path } }
@@ -527,16 +532,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         translateJob?.cancel()
         translateJob = viewModelScope.launch {
             setOutput("")
-            _state.update { it.copy(isTranslating = true, stats = null, message = null) }
+            _state.update { it.copy(isTranslating = true, stats = null, message = null, imageStage = null) }
             try {
                 events.throttleLatest(OUTPUT_FRAME_MS).collect { ev ->
                     when (ev) {
-                        is GenerationEvent.Partial -> setOutput(ev.text)
+                        is GenerationEvent.Stage -> _state.update {
+                            if (it.imageStage == ev.stage) it
+                            else it.copy(imageStage = ev.stage, imageStageSinceMs = ev.atMs)
+                        }
+                        is GenerationEvent.Partial -> {
+                            setOutput(ev.text)
+                            if (_state.value.imageStage != null) _state.update { it.copy(imageStage = null) }
+                        }
                         is GenerationEvent.Done -> {
                             setOutput(ev.text)
                             _state.update {
                                 it.copy(
                                     isTranslating = false,
+                                    imageStage = null,
                                     message = ev.stats.errorMessage(),
                                     stats = GenStats(ev.stats.generatedTokens, ev.stats.tokensPerSecond, ev.stats.stopReason),
                                 )
@@ -548,7 +561,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (t is CancellationException) throw t
                 _state.update { it.copy(isTranslating = false, message = str(R.string.msg_translate_failed, t.message ?: "")) }
             } finally {
-                _state.update { it.copy(isTranslating = false) }
+                _state.update { it.copy(isTranslating = false, imageStage = null) }
             }
         }
     }

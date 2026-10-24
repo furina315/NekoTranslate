@@ -2,6 +2,9 @@
 
 package com.nekohome.translate.ui.translate
 
+import android.os.SystemClock
+import com.nekohome.translate.engine.ImageStage
+import kotlinx.coroutines.delay
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -86,7 +89,9 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -206,6 +211,8 @@ fun TranslateScreen(
                         targetName = state.targetLanguage.nameZh,
                         isTranslating = state.isTranslating,
                         hasOutput = state.hasOutput,
+                        imageStage = state.imageStage,
+                        imageStageSinceMs = state.imageStageSinceMs,
                         output = outputProvider,
                         stats = state.stats,
                         showStats = showStats,
@@ -656,6 +663,8 @@ private fun OutputCard(
     targetName: String,
     isTranslating: Boolean,
     hasOutput: Boolean,
+    imageStage: ImageStage?,
+    imageStageSinceMs: Long,
     output: () -> String,
     stats: com.nekohome.translate.ui.GenStats?,
     showStats: Boolean,
@@ -680,6 +689,7 @@ private fun OutputCard(
             )
             Spacer(Modifier.height(8.dp))
             if (isTranslating && !hasOutput) {
+                if (imageStage != null) StageLabel(imageStage, imageStageSinceMs)
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(end = 12.dp, top = 8.dp, bottom = 16.dp))
             } else {
                 // No SelectionContainer while streaming: selection state would be rebuilt on
@@ -712,6 +722,35 @@ private fun OutputCard(
             }
         }
     }
+}
+
+/**
+ * Placeholder text while an image is processed: the current stage plus the seconds spent in it,
+ * ticking once a second (only this Text recomposes).
+ */
+@Composable
+private fun StageLabel(stage: ImageStage, sinceMs: Long) {
+    val label = stringResource(
+        when (stage) {
+            ImageStage.LOADING_MMPROJ -> R.string.translate_stage_loading_mmproj
+            ImageStage.ENCODING -> R.string.translate_stage_encoding
+            ImageStage.PREFILL -> R.string.translate_stage_prefill
+        },
+    )
+    var now by remember(stage, sinceMs) { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    LaunchedEffect(stage, sinceMs) {
+        while (true) {
+            delay(1000L - (SystemClock.elapsedRealtime() - sinceMs).mod(1000L))
+            now = SystemClock.elapsedRealtime()
+        }
+    }
+    val seconds = ((now - sinceMs) / 1000L).toInt()
+    Text(
+        text = if (seconds >= 1) stringResource(R.string.translate_stage_elapsed, label, seconds) else label,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+        modifier = Modifier.padding(end = 12.dp),
+    )
 }
 
 /** The only composable that reads the streamed text, so a token update recomposes just this. */

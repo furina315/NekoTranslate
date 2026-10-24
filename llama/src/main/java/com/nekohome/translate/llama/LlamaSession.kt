@@ -4,14 +4,27 @@ import java.io.Closeable
 
 data class LoadParams(
     val nCtx: Int = 4096,
+    /** Threads for token generation (memory-bandwidth bound). */
     val nThreads: Int = defaultThreads(),
+    /**
+     * Threads for compute-bound work: prompt prefill and the vision encoder (mmproj). Defaults to
+     * the performance cores (all 8 on a Snapdragon 8 Elite / Gen 5, which has no efficiency cores).
+     */
+    val nThreadsBatch: Int = defaultBatchThreads(),
+    /**
+     * Logical and physical batch size (n_batch = n_ubatch). 512 keeps text prefill and image
+     * embeddings in large matmuls; Qwen-VL image chunks use causal attention with explicit M-RoPE
+     * positions, so mtmd may split an image across several ubatches.
+     */
     val nBatch: Int = 512,
     val useMmap: Boolean = true,
 ) {
     companion object {
-        /** Leave a couple of cores for the UI; Snapdragon 8 Elite (Gen 5) has 8 big cores. */
-        fun defaultThreads(): Int =
-            (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
+        /** Generation threads: see [CpuCores.generationThreads]. */
+        fun defaultThreads(): Int = CpuCores.defaultGenerationThreads()
+
+        /** Prefill / image encode threads: see [CpuCores.batchThreads]. */
+        fun defaultBatchThreads(): Int = CpuCores.defaultBatchThreads()
     }
 }
 
@@ -101,7 +114,7 @@ class LlamaSession private constructor(handle: Long) : Closeable {
         fun load(path: String, params: LoadParams = LoadParams()): LlamaSession {
             val h = LlamaNative.nativeLoad(
                 path.toByteArray(Charsets.UTF_8), -1,
-                params.nCtx, params.nThreads, params.nBatch, params.useMmap,
+                params.nCtx, params.nThreads, params.nThreadsBatch, params.nBatch, params.useMmap,
             )
             if (h == 0L) throw IllegalStateException("Failed to load model: $path")
             return LlamaSession(h)
@@ -110,7 +123,7 @@ class LlamaSession private constructor(handle: Long) : Closeable {
         /** Loads from an open file descriptor (e.g. ParcelFileDescriptor.fd). The fd stays owned by the caller. */
         fun loadFromFd(fd: Int, params: LoadParams = LoadParams()): LlamaSession {
             val h = LlamaNative.nativeLoad(
-                null, fd, params.nCtx, params.nThreads, params.nBatch, params.useMmap,
+                null, fd, params.nCtx, params.nThreads, params.nThreadsBatch, params.nBatch, params.useMmap,
             )
             if (h == 0L) throw IllegalStateException("Failed to load model from fd $fd")
             return LlamaSession(h)
@@ -214,12 +227,13 @@ class LlamaSession private constructor(handle: Long) : Closeable {
 
     /**
      * Like [generate], for a formatted [prompt] containing [MEDIA_MARKER] plus [image].
-     * Requires [loadMmproj] first.
+     * Requires [loadMmproj] first. [onStage] receives StageListener.STAGE_* progress.
      */
     fun generateWithImage(
         prompt: String,
         image: RgbImage,
         sampling: SamplingParams,
+        onStage: StageListener? = null,
         onToken: (String) -> Boolean,
     ): GenerationStats {
         val r = LlamaNative.nativeGenerateImage(
@@ -236,7 +250,9 @@ class LlamaSession private constructor(handle: Long) : Closeable {
             sampling.repeatPenalty,
             sampling.repeatLastN,
             sampling.seed,
-        ) { bytes -> onToken(bytes.toString(Charsets.UTF_8)) }
+            { bytes -> onToken(bytes.toString(Charsets.UTF_8)) },
+            onStage,
+        )
         return stats(r)
     }
 

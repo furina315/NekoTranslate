@@ -17,11 +17,15 @@ data class ImageSize(val width: Int, val height: Int) {
  * Index-Translate recommends a longest edge of 512–2048 px. The vision tower (Qwen3-VL style,
  * patch 16, 2x2 merge) produces one token per 32x32 px, so the pixel budget also follows from
  * the token budget that fits in the context next to the prompt and the generated translation.
+ *
+ * Phone CPUs are the limit: the encoder's attention is quadratic in patches (4 per token), so a
+ * 1536 px photo (~1700 tokens) took minutes. 1024 px / 1024 tokens keeps signs, menus and
+ * screenshots legible at roughly a quarter of the encode cost.
  */
 object ImagePrep {
 
     /** Longest edge we decode to; larger photos are downscaled. */
-    const val MAX_EDGE = 1536
+    const val MAX_EDGE = 1024
 
     /** Below this longest edge we never shrink further for the pixel budget (unless the source is smaller). */
     const val MIN_EDGE = 512
@@ -29,8 +33,11 @@ object ImagePrep {
     /** Pixels per image token for a patch-16, 2x2-merge vision encoder. */
     const val PIXELS_PER_TOKEN = 32 * 32
 
-    /** Upper bound on image tokens, whatever the context (memory and encode time on a phone). */
-    const val MAX_IMAGE_TOKENS = 2048
+    /**
+     * Upper bound on image tokens, whatever the context (memory and encode time on a phone);
+     * passed to mtmd as image_max_tokens. MAX_EDGE² pixels fit it exactly (1024 x 1024 = 1024 tokens).
+     */
+    const val MAX_IMAGE_TOKENS = 1024
 
     private const val MIN_IMAGE_TOKENS = 256
     private const val PROMPT_RESERVE = 256
