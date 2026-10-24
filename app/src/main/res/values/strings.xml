@@ -39,6 +39,8 @@
     <string name="translate_stage_encoding">编码图片…</string>
     <string name="translate_stage_prefill">预填充…</string>
     <string name="translate_stage_elapsed">%1$s %2$d 秒</string>
+    <string name="translate_stage_encoding_on">编码图片（%1$s）…</string>
+    <string name="translate_stage_prefill_on">预填充（%1$s）…</string>
 
     <!-- 模型页 -->
     <string name="models_title">模型</string>
@@ -79,7 +81,21 @@
     <string name="models_off">关闭</string>
     <string name="models_greedy">贪心</string>
     <string name="models_reset_defaults">恢复 Profile 默认值</string>
-    <string name="models_reload_needed">上下文长度或线程数已修改，重新加载后生效。</string>
+    <string name="models_reload_needed">加载参数已修改，重新加载后生效。</string>
+    <string name="models_gpu">GPU 加速（实验）</string>
+    <string name="models_gpu_off">关</string>
+    <string name="models_gpu_encoder">仅图片编码</string>
+    <string name="models_gpu_all">全部 GPU</string>
+    <string name="models_gpu_help">仅图片编码：视觉编码器用 GPU，文本预填充和生成仍用 CPU（推荐先试）。全部 GPU：文本模型也放到 GPU，逐字生成可能比 CPU 慢。</string>
+    <string name="models_gpu_device">GPU：%1$s</string>
+    <string name="models_gpu_probing">正在检测 GPU…</string>
+    <string name="models_gpu_unsupported">此设备不支持</string>
+    <string name="models_gpu_checking">正在自检 GPU（首次需编译内核，可能要十几秒）…</string>
+    <string name="models_gpu_failed">GPU 自检未通过，已停用：%1$s</string>
+    <string name="models_gpu_failed_crash">上次使用 GPU 时应用异常退出，已自动停用</string>
+    <string name="models_gpu_retry">重新检测</string>
+    <string name="models_load_info_gpu"> · GPU：%1$s</string>
+    <string name="models_load_info_gpu_fallback"> · GPU 加载失败，已用 CPU</string>
     <string name="models_reload">重新加载</string>
     <string name="models_runtime_info">运行时信息</string>
     <string name="models_section_expand">展开</string>
@@ -107,6 +123,8 @@
     <string name="msg_mmproj_no_model">%1$s 是视觉组件（mmproj），但没找到对应的模型。请先导入模型，再在模型卡片上点「关联 mmproj」。</string>
     <string name="msg_mmproj_removed">已移除视觉组件</string>
     <string name="msg_image_failed">无法读取图片：%1$s</string>
+    <string name="msg_gpu_passed">GPU 自检通过，重新加载模型后生效</string>
+    <string name="msg_gpu_failed">GPU 自检未通过（%1$s），已保持关闭</string>
 
     <!-- 设置页 -->
     <string name="settings_title">设置</string>

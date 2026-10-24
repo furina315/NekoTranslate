@@ -10,6 +10,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nekohome.translate.R
 import com.nekohome.translate.data.BuiltInProfiles
+import com.nekohome.translate.data.GpuGuard
+import com.nekohome.translate.data.GpuState
 import com.nekohome.translate.data.Language
 import com.nekohome.translate.data.LanguageRules
 import com.nekohome.translate.data.ImportResult
@@ -29,6 +31,7 @@ import com.nekohome.translate.engine.MemoryStats
 import com.nekohome.translate.engine.TranslationEngine
 import com.nekohome.translate.engine.throttleLatest
 import androidx.compose.runtime.Immutable
+import com.nekohome.translate.llama.GpuMode
 import com.nekohome.translate.llama.LlamaSession
 import com.nekohome.translate.llama.RgbImage
 import com.nekohome.translate.llama.StopReason
@@ -94,6 +97,10 @@ data class MainUiState(
     val imageStage: ImageStage? = null,
     /** SystemClock.elapsedRealtime() when [imageStage] began. */
     val imageStageSinceMs: Long = 0L,
+    /** "GPU" / "CPU" for [imageStage] when GPU acceleration is on, else null. */
+    val imageStageBackend: String? = null,
+    /** Experimental GPU acceleration: device support and self-test state. */
+    val gpu: GpuState = GpuState(),
 ) {
     val selectedModel: LocalModel? get() = models.firstOrNull { it.file.absolutePath == selectedPath }
     val loadedModel: LocalModel? get() = loaded?.let { l -> models.firstOrNull { it.file.absolutePath == l.path } }
@@ -123,7 +130,7 @@ data class MainUiState(
     fun needsReload(model: LocalModel): Boolean {
         val l = loaded ?: return false
         if (l.path != model.file.absolutePath) return false
-        return ModelParams.needsReload(l.params, paramsFor(model).loadParams())
+        return ModelParams.needsReload(l.params, paramsFor(model).loadParams(gpu.usable))
     }
 }
 
@@ -172,6 +179,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val info = runCatching { engine.systemInfo() }.getOrElse { "native init failed: ${it.message}" }
             _state.update { it.copy(systemInfo = info) }
+            val gpu = runCatching { engine.gpuState() }.getOrElse { GpuState(device = "") }
+            _state.update { it.copy(gpu = gpu) }
         }
         viewModelScope.launch {
             settingsRepository.settings.map { it.defaultTargetCode }.distinctUntilChanged().collect { code ->
@@ -233,7 +242,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (st.isLoading || st.isTranslating) return
         viewModelScope.launch {
             paramsReady.await()
-            val params = _state.value.paramsFor(model).loadParams()
+            val params = _state.value.paramsFor(model).loadParams(_state.value.gpu.usable)
             _state.update {
                 it.copy(loadingPath = model.file.absolutePath, selectedPath = model.file.absolutePath, message = null)
             }
@@ -251,7 +260,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             String.format(Locale.US, "%.2f", loaded.loadMs / 1000.0),
                             loaded.info.nCtx,
                             params.nThreads,
-                            rss?.let { mb -> " · RSS $mb MB" } ?: "",
+                            (rss?.let { mb -> " · RSS $mb MB" } ?: "") + gpuLoadInfo(loaded),
                         ),
                         message = str(R.string.msg_loaded, model.file.nameWithoutExtension),
                     )
@@ -478,6 +487,62 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setThreads(model: LocalModel, v: Int) = updateParams(model) { it.copy(nThreads = v) }
     fun resetParams(model: LocalModel) = updateParams(model) { it.resetToDefaults() }
 
+    // ------------------------------------------------------------------ experimental GPU
+
+    /**
+     * Sets [model]'s GPU mode. Turning it on for the first time on this device (or after an app
+     * update) runs the GPU-vs-CPU self-test first; the mode is only saved when it passes.
+     */
+    fun setGpuMode(model: LocalModel, mode: GpuMode) {
+        val st = _state.value
+        if (mode == GpuMode.OFF) {
+            updateParams(model) { it.copy(gpuMode = null) }
+            return
+        }
+        val gpu = st.gpu
+        if (!gpu.supported || gpu.failure != null || gpu.checking) return
+        if (gpu.verified) {
+            updateParams(model) { it.copy(gpuMode = mode) }
+            return
+        }
+        if (st.isLoading || st.isTranslating) return
+        viewModelScope.launch {
+            _state.update { it.copy(gpu = it.gpu.copy(checking = true), message = null) }
+            val result = try {
+                engine.gpuSelfTest()
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                gpu.copy(failure = t.message ?: t.javaClass.simpleName)
+            }
+            _state.update { it.copy(gpu = result.copy(checking = false)) }
+            if (result.usable) {
+                updateParams(model) { it.copy(gpuMode = mode) }
+                _state.update { it.copy(message = str(R.string.msg_gpu_passed)) }
+            } else {
+                _state.update { it.copy(message = str(R.string.msg_gpu_failed, gpuFailureText(result.failure))) }
+            }
+        }
+    }
+
+    /** Clears a failed GPU check so the next switch to a GPU mode tests again. */
+    fun retryGpuCheck() {
+        if (_state.value.gpu.checking) return
+        viewModelScope.launch {
+            val gpu = runCatching { engine.gpuReset() }.getOrNull() ?: return@launch
+            _state.update { it.copy(gpu = gpu) }
+        }
+    }
+
+    fun gpuFailureText(failure: String?): String =
+        if (failure == GpuGuard.CRASH) str(R.string.models_gpu_failed_crash) else failure.orEmpty()
+
+    private fun gpuLoadInfo(loaded: LoadedModel): String = when (loaded.params.gpuMode) {
+        GpuMode.OFF -> ""
+        GpuMode.ALL -> if (loaded.textOnGpu) str(R.string.models_load_info_gpu, str(R.string.models_gpu_all))
+            else str(R.string.models_load_info_gpu_fallback)
+        GpuMode.ENCODER -> str(R.string.models_load_info_gpu, str(R.string.models_gpu_encoder))
+    }
+
     /** Debounced write: slider drags update memory every frame but hit disk once they settle. */
     private fun persist(key: String, params: ModelParams) {
         saveJobs[key]?.cancel()
@@ -538,7 +603,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     when (ev) {
                         is GenerationEvent.Stage -> _state.update {
                             if (it.imageStage == ev.stage) it
-                            else it.copy(imageStage = ev.stage, imageStageSinceMs = ev.atMs)
+                            else it.copy(imageStage = ev.stage, imageStageSinceMs = ev.atMs, imageStageBackend = ev.backend)
                         }
                         is GenerationEvent.Partial -> {
                             setOutput(ev.text)

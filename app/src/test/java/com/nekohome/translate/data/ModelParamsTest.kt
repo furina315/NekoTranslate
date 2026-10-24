@@ -1,5 +1,6 @@
 package com.nekohome.translate.data
 
+import com.nekohome.translate.llama.GpuMode
 import com.nekohome.translate.llama.LoadParams
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -80,5 +81,40 @@ class ModelParamsTest {
         assertFalse(ModelParamsCodec.belongsTo("b.gguf::temperature", "a.gguf"))
         assertNull(decoded["missing"])
         assertTrue(ModelParamsCodec.encode("x", ModelParams()).isEmpty())
+    }
+
+    @Test
+    fun gpuModeAppliesOnlyWhenUsable() {
+        val p = ModelParams(gpuMode = GpuMode.ENCODER)
+        assertEquals(GpuMode.ENCODER, p.loadParams(gpuUsable = true, defaultThreads = 4).gpuMode)
+        assertEquals(GpuMode.OFF, p.loadParams(gpuUsable = false, defaultThreads = 4).gpuMode)
+        assertEquals(GpuMode.OFF, ModelParams().loadParams(gpuUsable = true, defaultThreads = 4).gpuMode)
+        assertEquals(GpuMode.OFF, ModelParams().loadParams(defaultThreads = 4).gpuMode)
+    }
+
+    @Test
+    fun gpuModeChangeNeedsReload() {
+        val loaded = LoadParams(nCtx = 4096, nThreads = 4, nThreadsBatch = 8)
+        assertFalse(ModelParams.needsReload(loaded, loaded.copy()))
+        assertTrue(ModelParams.needsReload(loaded, loaded.copy(gpuMode = GpuMode.ALL)))
+        assertTrue(ModelParams.needsReload(loaded.copy(gpuMode = GpuMode.ENCODER), loaded.copy(gpuMode = GpuMode.ALL)))
+    }
+
+    @Test
+    fun gpuModeIsPersistedAndReset() {
+        val p = ModelParams(nThreads = 4, gpuMode = GpuMode.ALL, mmproj = "m.gguf")
+        val enc = ModelParamsCodec.encode("model.gguf", p)
+        assertEquals("all", enc["model.gguf::gpu"])
+        assertEquals(p, ModelParamsCodec.decodeAll(enc)["model.gguf"])
+        // Off is the default and is not written.
+        assertFalse(ModelParamsCodec.encode("x", ModelParams(gpuMode = null)).keys.any { it.endsWith("::gpu") })
+        // Stray / unknown values decode to "default" (off).
+        assertNull(ModelParamsCodec.decodeAll(mapOf("x::gpu" to "off", "x::n_ctx" to "1024"))["x"]?.gpuMode)
+        assertNull(ModelParamsCodec.decodeAll(mapOf("x::gpu" to "vulkan", "x::n_ctx" to "1024"))["x"]?.gpuMode)
+        val reset = p.resetToDefaults()
+        assertNull(reset.gpuMode)
+        assertEquals("m.gguf", reset.mmproj)
+        assertTrue(p.hasValueOverrides)
+        assertFalse(ModelParams(mmproj = "m.gguf").hasValueOverrides)
     }
 }

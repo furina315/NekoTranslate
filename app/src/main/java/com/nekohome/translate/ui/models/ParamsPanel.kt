@@ -69,8 +69,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nekohome.translate.R
 import com.nekohome.translate.data.BuiltInProfiles
+import com.nekohome.translate.data.GpuState
 import com.nekohome.translate.data.LocalModel
 import com.nekohome.translate.data.ParamScales
+import com.nekohome.translate.llama.GpuMode
 import com.nekohome.translate.ui.MainUiState
 import com.nekohome.translate.ui.MainViewModel
 import com.nekohome.translate.ui.common.Format
@@ -90,7 +92,7 @@ fun ParamsPanel(model: LocalModel, state: MainUiState, vm: MainViewModel) {
     val params = state.paramsFor(model)
     val profile = state.profileFor(model)
     val sampling = params.sampling(profile)
-    val load = params.loadParams()
+    val load = params.loadParams(state.gpu.usable)
     val busy = state.isLoading || state.isTranslating
     val reduceMotion = LocalReduceMotion.current
 
@@ -209,6 +211,15 @@ fun ParamsPanel(model: LocalModel, state: MainUiState, vm: MainViewModel) {
                     onChange = { vm.setThreads(model, it) },
                 )
             }
+            GpuParam(
+                gpu = state.gpu,
+                current = params.gpuMode ?: GpuMode.OFF,
+                isDefault = params.gpuMode == null,
+                busy = busy,
+                failureText = vm.gpuFailureText(state.gpu.failure),
+                onChange = { vm.setGpuMode(model, it) },
+                onRetry = { vm.retryGpuCheck() },
+            )
         }
 
         val resetSource = remember { MutableInteractionSource() }
@@ -520,6 +531,62 @@ private fun SegmentedParam(
                     },
                 )
             }
+        }
+    }
+}
+
+/**
+ * Experimental GPU acceleration: 关 / 仅图片编码 / 全部 GPU. Disabled with a note when the device
+ * has no usable Adreno GPU, while the self-test runs, or after it failed (with 重新检测).
+ */
+@Composable
+private fun GpuParam(
+    gpu: GpuState,
+    current: GpuMode,
+    isDefault: Boolean,
+    busy: Boolean,
+    failureText: String,
+    onChange: (GpuMode) -> Unit,
+    onRetry: () -> Unit,
+) {
+    val labels = mapOf(
+        GpuMode.OFF to stringResource(R.string.models_gpu_off),
+        GpuMode.ENCODER to stringResource(R.string.models_gpu_encoder),
+        GpuMode.ALL to stringResource(R.string.models_gpu_all),
+    )
+    // A saved mode is shown as off while the GPU is not usable (it is not applied either).
+    val shown = if (gpu.usable) current else GpuMode.OFF
+    val enabled = gpu.supported && gpu.failure == null && !gpu.checking && !busy
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ParamHeader(stringResource(R.string.models_gpu), labels.getValue(shown), isDefault)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            GpuMode.entries.forEachIndexed { i, mode ->
+                SegmentedButton(
+                    selected = mode == shown,
+                    onClick = { if (mode != shown) onChange(mode) },
+                    enabled = enabled,
+                    shape = SegmentedButtonDefaults.itemShape(index = i, count = GpuMode.entries.size),
+                    icon = {},
+                    label = {
+                        Text(labels.getValue(mode), maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                    },
+                )
+            }
+        }
+        val note = when {
+            gpu.device == null -> stringResource(R.string.models_gpu_probing)
+            !gpu.supported -> stringResource(R.string.models_gpu_unsupported)
+            gpu.checking -> stringResource(R.string.models_gpu_checking)
+            gpu.failure != null -> stringResource(R.string.models_gpu_failed, failureText)
+            else -> stringResource(R.string.models_gpu_help) + "\n" + stringResource(R.string.models_gpu_device, gpu.device.orEmpty())
+        }
+        Text(
+            note,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (gpu.failure != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (gpu.failure != null && !gpu.checking) {
+            TextButton(onClick = onRetry, enabled = !busy) { Text(stringResource(R.string.models_gpu_retry)) }
         }
     }
 }

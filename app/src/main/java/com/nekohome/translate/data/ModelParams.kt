@@ -1,5 +1,6 @@
 package com.nekohome.translate.data
 
+import com.nekohome.translate.llama.GpuMode
 import com.nekohome.translate.llama.LoadParams
 import com.nekohome.translate.llama.SamplingParams
 
@@ -20,6 +21,12 @@ data class ModelParams(
     val maxTokens: Int? = null,
     val nCtx: Int? = null,
     val nThreads: Int? = null,
+    /**
+     * Experimental GPU acceleration for this model; `null` = off. Per model because it depends on
+     * the model's quantization (the OpenCL fast paths cover Q4_0 / Q4_K / Q6_K / Q8_0) and its
+     * memory needs, and like context / threads it needs a reload.
+     */
+    val gpuMode: GpuMode? = null,
     /**
      * File name (in filesDir/mmproj) of the vision projector associated with this model for image
      * translation; `null` = none. Not a tunable value: kept by [resetToDefaults].
@@ -52,21 +59,27 @@ data class ModelParams(
 
     /**
      * The user's thread count, when set, applies to generation and to prefill / image encoding
-     * alike; otherwise each uses its own default (see LoadParams).
+     * alike; otherwise each uses its own default (see LoadParams). The GPU mode applies only when
+     * [gpuUsable] (device supported and its self-test passed); otherwise everything is on the CPU.
      */
     fun loadParams(
+        gpuUsable: Boolean = false,
         defaultThreads: Int = LoadParams.defaultThreads(),
         defaultBatchThreads: Int = LoadParams.defaultBatchThreads(),
     ): LoadParams = LoadParams(
         nCtx = nCtx ?: DEFAULT_CONTEXT,
         nThreads = nThreads ?: defaultThreads,
         nThreadsBatch = nThreads ?: defaultBatchThreads,
+        gpuMode = effectiveGpuMode(gpuUsable),
     )
+
+    /** The GPU mode the next load will use. */
+    fun effectiveGpuMode(gpuUsable: Boolean): GpuMode = if (gpuUsable) gpuMode ?: GpuMode.OFF else GpuMode.OFF
 
     /** Drops every sampling / load override; keeps the profile choice and custom template. */
     fun resetToDefaults(): ModelParams = copy(
         temperature = null, topP = null, topK = null, repeatPenalty = null, maxTokens = null,
-        nCtx = null, nThreads = null,
+        nCtx = null, nThreads = null, gpuMode = null,
     )
 
     val hasValueOverrides: Boolean
@@ -75,10 +88,10 @@ data class ModelParams(
     companion object {
         const val DEFAULT_CONTEXT = 4096
 
-        /** Context / thread changes only take effect after the model is loaded again. */
+        /** Context / thread / GPU changes only take effect after the model is loaded again. */
         fun needsReload(loaded: LoadParams, wanted: LoadParams): Boolean =
             loaded.nCtx != wanted.nCtx || loaded.nThreads != wanted.nThreads ||
-                loaded.nThreadsBatch != wanted.nThreadsBatch
+                loaded.nThreadsBatch != wanted.nThreadsBatch || loaded.gpuMode != wanted.gpuMode
     }
 }
 
@@ -98,6 +111,7 @@ object ModelParamsCodec {
     private const val N_CTX = "n_ctx"
     private const val N_THREADS = "n_threads"
     private const val MMPROJ = "mmproj"
+    private const val GPU = "gpu"
 
     fun encode(modelKey: String, p: ModelParams): Map<String, String> = buildMap<String, String> {
         fun add(field: String, v: Any?) { if (v != null) put("$modelKey$SEP$field", v.toString()) }
@@ -111,6 +125,7 @@ object ModelParamsCodec {
         add(N_CTX, p.nCtx)
         add(N_THREADS, p.nThreads)
         add(MMPROJ, p.mmproj)
+        add(GPU, p.gpuMode?.key)
     }
 
     fun belongsTo(key: String, modelKey: String): Boolean = splitKey(key)?.first == modelKey
@@ -132,6 +147,7 @@ object ModelParamsCodec {
         nCtx = f[N_CTX]?.toIntOrNull(),
         nThreads = f[N_THREADS]?.toIntOrNull(),
         mmproj = f[MMPROJ]?.takeIf { it.isNotBlank() },
+        gpuMode = f[GPU]?.let { GpuMode.fromKey(it) }?.takeIf { it != GpuMode.OFF },
     )
 
     private fun splitKey(key: String): Pair<String, String>? {
