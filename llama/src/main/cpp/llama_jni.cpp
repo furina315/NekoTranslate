@@ -4,6 +4,10 @@
 // helpers), so this file keeps compiling across llama.cpp updates as long as those stay source
 // compatible. mtmd provides image input through a vision projector (mmproj GGUF).
 //
+// Experimental GPU acceleration (arm64-v8a, LT_OPENCL): ggml's OpenCL backend for Adreno GPUs is a
+// separate module (libneko-opencl.so) loaded on demand by nativeGpuProbe(). Models and projectors
+// are always loaded with an explicit device list, so the GPU is only used where the caller asks.
+//
 // Threading: every call except nativeCancel() must come from the same thread (the Kotlin side runs
 // all of them on one dedicated engine thread). nativeCancel() only flips an atomic flag.
 //
@@ -18,6 +22,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <random>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -25,6 +32,7 @@
 #include <vector>
 
 #include "llama.h"
+#include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -48,6 +56,8 @@ struct Session {
     llama_context * ctx   = nullptr;
     mtmd_context  * mtmd  = nullptr;   // vision projector, loaded on demand (nativeMmprojLoad)
     std::atomic<bool> cancel{false};
+    bool text_gpu = false;             // text model weights / compute on the GPU (GPU mode "all")
+    bool mtmd_gpu = false;             // vision encoder on the GPU
     int32_t n_batch = 512;
     uint32_t eval_nodes = 0;           // node counter for mtmd_eval_cb (engine thread only)
 };
@@ -59,6 +69,16 @@ constexpr int LT_STAGE_GENERATE = 3;   // prompt done, first token being sampled
 
 bool g_backend_ready = false;
 bool g_mtmd_log_ready = false;
+std::string g_lib_dir;                     // nativeLibraryDir (backend modules live here)
+bool g_gpu_probed = false;
+ggml_backend_dev_t g_gpu_dev = nullptr;   // first OpenCL GPU device, if any
+
+// Load modes passed by Kotlin (keep in sync with GpuMode.nativeCode).
+constexpr int LT_GPU_OFF     = 0;
+constexpr int LT_GPU_ENCODER = 1;          // vision encoder only; text model on the CPU
+constexpr int LT_GPU_ALL     = 2;          // vision encoder + text model (prefill and generation)
+
+const char * backend_name(bool gpu) { return gpu ? "GPU" : "CPU"; }
 
 // ggml_backend_sched eval callback installed on the mtmd (vision encoder) scheduler. The CLIP
 // encoder has no abort callback, so this is how a stop request interrupts a running image
@@ -280,6 +300,103 @@ void free_mtmd(Session * s) {
     }
 }
 
+
+// ------------------------------------------------------------------------------------------------
+// GPU self-check: quantized MUL_MAT on the GPU vs the CPU backend
+// ------------------------------------------------------------------------------------------------
+
+// Runs out = W x for one weight type and batch size on `backend`; returns the output (n_rows x n).
+bool run_mul_mat(ggml_backend_t backend, ggml_type type, int64_t k, int64_t m, int64_t n,
+                 const std::vector<uint8_t> & wq, const std::vector<float> & x, std::vector<float> & out) {
+    ggml_init_params ip = { 3 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    if (ctx == nullptr) return false;
+    ggml_tensor * w = ggml_new_tensor_2d(ctx, type, k, m);
+    ggml_tensor * a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, n);
+    ggml_tensor * y = ggml_mul_mat(ctx, w, a);
+    // Computing on the backend directly (no scheduler): an unsupported op would abort. Not
+    // supported is not a failure either: the scheduler would run that op on the CPU.
+    if (!ggml_backend_supports_op(backend, y)) { ggml_free(ctx); out.clear(); return true; }
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf, y);
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (buf == nullptr) { ggml_free(ctx); return false; }
+    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    ggml_backend_tensor_set(w, wq.data(), 0, wq.size());
+    ggml_backend_tensor_set(a, x.data(), 0, x.size() * sizeof(float));
+    const bool ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
+    if (ok) {
+        out.resize(static_cast<size_t>(m * n));
+        ggml_backend_tensor_get(y, out.data(), 0, out.size() * sizeof(float));
+    }
+    ggml_backend_buffer_free(buf);
+    ggml_free(ctx);
+    return ok;
+}
+
+// Compares the GPU against the CPU on the weight types the supported models use (Q4_K / Q6_K text
+// weights, Q8_0 / F16 vision projectors) at batch sizes that hit the GEMV, small-batch GEMM and
+// large GEMM kernels. Shapes are >= 512 so the Adreno-specific paths are taken. Returns "" when
+// every case agrees (normalised MSE < 1e-2; quantisation noise between backends is ~1e-4, a broken
+// kernel gives ~1 or NaN), else a short description of the first failure.
+std::string gpu_self_test(ggml_backend_dev_t dev) {
+    const double t0 = now_ms();
+    ggml_backend_t gpu = ggml_backend_dev_init(dev, nullptr);   // compiles the kernels (cached on disk)
+    if (gpu == nullptr) return "GPU backend init failed";
+    ggml_backend_t cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    if (cpu == nullptr) { ggml_backend_free(gpu); return "CPU backend init failed"; }
+    const double t_init = now_ms() - t0;
+
+    const int64_t k = 2048, m = 512;
+    const int64_t batches[] = { 1, 8, 33, 128, 512 };
+    const ggml_type types[] = { GGML_TYPE_Q4_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_F16 };
+    std::mt19937 rng(42);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    std::vector<float> wf(static_cast<size_t>(k * m));
+    for (auto & v : wf) v = nd(rng) * 0.05f;
+    std::vector<float> x(static_cast<size_t>(k * batches[4]));
+    for (auto & v : x) v = nd(rng);
+
+    std::string err;
+    double worst = 0;
+    for (ggml_type type : types) {
+        if (!err.empty()) break;
+        std::vector<uint8_t> wq(ggml_row_size(type, k) * static_cast<size_t>(m));
+        ggml_quantize_chunk(type, wf.data(), wq.data(), 0, m, k, nullptr);
+        for (int64_t n : batches) {
+            std::vector<float> xn(x.begin(), x.begin() + k * n), yg, yc;
+            if (!run_mul_mat(cpu, type, k, m, n, wq, xn, yc)) { err = "CPU compute failed"; break; }
+            if (!run_mul_mat(gpu, type, k, m, n, wq, xn, yg)) {
+                err = std::string("GPU compute failed: ") + ggml_type_name(type);
+                break;
+            }
+            if (yg.empty() || yc.empty()) {   // not offered by the GPU backend: runs on the CPU anyway
+                LOGI("GPU self-test: %s x %d not supported on the GPU, skipped", ggml_type_name(type), static_cast<int>(n));
+                continue;
+            }
+            double se = 0, ref = 0;
+            for (size_t i = 0; i < yc.size(); ++i) {
+                const double d = static_cast<double>(yg[i]) - yc[i];
+                se += d * d;
+                ref += static_cast<double>(yc[i]) * yc[i];
+            }
+            const double nmse = ref > 0 ? se / ref : se;
+            worst = std::max(worst, std::isfinite(nmse) ? nmse : 1e9);
+            if (!std::isfinite(nmse) || nmse > 1e-2) {
+                char b[128];
+                snprintf(b, sizeof(b), "%s x %d: nmse %.3g", ggml_type_name(type), static_cast<int>(n), nmse);
+                err = b;
+                break;
+            }
+        }
+    }
+    ggml_backend_free(cpu);
+    ggml_backend_free(gpu);
+    LOGI("GPU self-test: %s (init %.0f ms, total %.0f ms, worst nmse %.2g)", err.empty() ? "passed" : err.c_str(),
+         t_init, now_ms() - t0, worst);
+    LOGIMG("GPU self-test %s in %.0f ms (kernel init %.0f ms)", err.empty() ? "passed" : "FAILED", now_ms() - t0, t_init);
+    return err;
+}
 } // namespace
 
 // ================================================================================================
@@ -297,6 +414,8 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeInitBackend(JNIEnv * env, jo
     // ggml scores each against the running CPU's features and loads the best one.
     const char * dir = env->GetStringUTFChars(jlib_dir, nullptr);
     LOGI("Loading ggml backends from %s", dir);
+    g_lib_dir = dir;
+    // CPU variants only: the OpenCL module has a name this does not match (see CMakeLists.txt).
     ggml_backend_load_all_from_path(dir);
     env->ReleaseStringUTFChars(jlib_dir, dir);
 #else
@@ -325,32 +444,51 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeLoad(
         JNIEnv * env, jobject,
         jbyteArray jpath, jint fd,
         jint n_ctx, jint n_threads, jint n_threads_batch, jint n_batch,
-        jboolean use_mmap) {
+        jboolean use_mmap, jint gpu_mode) {
     if (!g_backend_ready) {
         LOGE("nativeLoad called before nativeInitBackend");
         return 0;
     }
 
-    llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;            // CPU backend only for now
-    // b11707 replaced use_mmap/use_mlock with load_mode.
-    mparams.load_mode    = use_mmap == JNI_TRUE ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
-
-    llama_model * model = nullptr;
-    if (fd >= 0) {
-        int dup_fd = dup(fd);
-        FILE * f = dup_fd >= 0 ? fdopen(dup_fd, "rb") : nullptr;
-        if (f == nullptr) {
-            if (dup_fd >= 0) close(dup_fd);
-            LOGE("cannot open fd %d", fd);
-            return 0;
+    // Always an explicit device list: with the OpenCL module registered, a NULL list would make
+    // llama.cpp put every layer on the GPU. Empty list = CPU only (weights in the CPU / KleidiAI
+    // repack buffers as before).
+    const bool want_gpu = gpu_mode == LT_GPU_ALL && g_gpu_dev != nullptr;
+    if (gpu_mode == LT_GPU_ALL && !want_gpu) LOGW("GPU mode requested but no GPU device; using the CPU");
+    const std::string path = fd >= 0 ? std::string() : bytes_to_string(env, jpath);
+    auto load_model = [&](bool gpu) -> llama_model * {
+        static ggml_backend_dev_t cpu_only[1] = { nullptr };
+        static ggml_backend_dev_t gpu_devs[2] = { nullptr, nullptr };
+        gpu_devs[0] = g_gpu_dev;
+        llama_model_params mparams = llama_model_default_params();
+        mparams.devices      = gpu ? gpu_devs : cpu_only;
+        mparams.n_gpu_layers = gpu ? 999 : 0;
+        mparams.split_mode   = LLAMA_SPLIT_MODE_NONE;
+        mparams.main_gpu     = 0;
+        // b11707 replaced use_mmap/use_mlock with load_mode.
+        mparams.load_mode    = use_mmap == JNI_TRUE ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
+        if (fd >= 0) {
+            int dup_fd = dup(fd);
+            FILE * f = dup_fd >= 0 ? fdopen(dup_fd, "rb") : nullptr;
+            if (f == nullptr) {
+                if (dup_fd >= 0) close(dup_fd);
+                LOGE("cannot open fd %d", fd);
+                return nullptr;
+            }
+            llama_model * m = llama_model_load_from_file_ptr(f, mparams);
+            fclose(f);
+            return m;
         }
-        model = llama_model_load_from_file_ptr(f, mparams);
-        fclose(f);
-    } else {
-        const std::string path = bytes_to_string(env, jpath);
-        LOGI("Loading model: %s", path.c_str());
-        model = llama_model_load_from_file(path.c_str(), mparams);
+        LOGI("Loading model: %s (%s)", path.c_str(), backend_name(gpu));
+        return llama_model_load_from_file(path.c_str(), mparams);
+    };
+
+    bool on_gpu = want_gpu;
+    llama_model * model = load_model(on_gpu);
+    if (model == nullptr && on_gpu) {
+        LOGW("model load on the GPU failed; retrying on the CPU");
+        on_gpu = false;
+        model = load_model(false);
     }
     if (model == nullptr) {
         LOGE("llama_model_load failed");
@@ -376,15 +514,25 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeLoad(
     cparams.abort_callback_data = session;
 
     llama_context * ctx = llama_init_from_model(model, cparams);
+    if (ctx == nullptr && on_gpu) {
+        LOGW("llama_init_from_model on the GPU failed; reloading on the CPU");
+        llama_model_free(model);
+        on_gpu = false;
+        model = load_model(false);
+        session->model = model;
+        ctx = model != nullptr ? llama_init_from_model(model, cparams) : nullptr;
+    }
     if (ctx == nullptr) {
         LOGE("llama_init_from_model failed");
-        llama_model_free(model);
+        if (model != nullptr) llama_model_free(model);
         delete session;
         return 0;
     }
     session->ctx = ctx;
-    LOGI("Model loaded: n_ctx=%u threads=%d threads_batch=%d batch=%d ubatch=%d", llama_n_ctx(ctx),
-         cparams.n_threads, cparams.n_threads_batch, cparams.n_batch, cparams.n_ubatch);
+    session->text_gpu = on_gpu;
+    LOGI("Model loaded: n_ctx=%u threads=%d threads_batch=%d batch=%d ubatch=%d backend=%s", llama_n_ctx(ctx),
+         cparams.n_threads, cparams.n_threads_batch, cparams.n_batch, cparams.n_ubatch, backend_name(on_gpu));
+    LOGIMG("text model on %s (prefill + generation), gpu_mode=%d", backend_name(on_gpu), static_cast<int>(gpu_mode));
     return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
 }
 
@@ -552,7 +700,7 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerate(
 
     const GenResult g = generate_loop(env, s, smpl, callback, on_token, n_prompt, max_tokens);
     llama_sampler_free(smpl);
-    log_perf(s, "text", n_prompt, prompt_ms, g);
+    log_perf(s, s->text_gpu ? "text/GPU" : "text/CPU", n_prompt, prompt_ms, g);
     return make_result(env, g.status, n_prompt, prompt_ms, g.n_gen, g.gen_ms, g.reason);
 }
 
@@ -571,7 +719,8 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeMediaMarker(JNIEnv * env, jo
 // Returns 0 ok, -1 bad handle, -2 load failed, -3 the projector has no vision encoder.
 JNIEXPORT jint JNICALL
 Java_com_nekohome_translate_llama_LlamaNative_nativeMmprojLoad(
-        JNIEnv * env, jobject, jlong handle, jbyteArray jpath, jint n_threads, jint image_max_tokens) {
+        JNIEnv * env, jobject, jlong handle, jbyteArray jpath, jint n_threads, jint image_max_tokens,
+        jboolean use_gpu) {
     Session * s = as_session(handle);
     if (s == nullptr || s->model == nullptr) return -1;
     free_mtmd(s);
@@ -581,8 +730,12 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeMmprojLoad(
     }
 
     const std::string path = bytes_to_string(env, jpath);
+    const bool want_gpu = use_gpu == JNI_TRUE && g_gpu_dev != nullptr;
     mtmd_context_params mp = mtmd_context_params_default();
-    mp.use_gpu       = false;   // CPU only, like the text model (n_gpu_layers = 0)
+    // Explicit device: clip throws (mtmd_init fails) instead of silently picking another backend,
+    // so we know where the encoder runs. The clip repack patch only touches CPU-only contexts.
+    mp.use_gpu       = want_gpu;
+    mp.device        = want_gpu ? g_gpu_dev : nullptr;
     mp.print_timings = true;
     mp.n_threads     = std::max(1, static_cast<int>(n_threads));
     mp.media_marker  = mtmd_default_marker();
@@ -591,9 +744,18 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeMmprojLoad(
     mp.cb_eval           = mtmd_eval_cb;
     mp.cb_eval_user_data = s;
 
-    LOGI("Loading mmproj: %s (threads=%d, image_max_tokens=%d)", path.c_str(), mp.n_threads, image_max_tokens);
+    LOGI("Loading mmproj: %s (threads=%d, image_max_tokens=%d, %s)", path.c_str(), mp.n_threads,
+         image_max_tokens, backend_name(want_gpu));
     const double t0 = now_ms();
     mtmd_context * m = mtmd_init_from_file(path.c_str(), s->model, mp);
+    bool on_gpu = want_gpu;
+    if (m == nullptr && want_gpu) {
+        LOGW("mmproj init on the GPU failed; retrying on the CPU");
+        mp.use_gpu = false;
+        mp.device  = nullptr;
+        on_gpu = false;
+        m = mtmd_init_from_file(path.c_str(), s->model, mp);
+    }
     if (m == nullptr) {
         LOGE("mtmd_init_from_file failed");
         return -2;
@@ -604,9 +766,10 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeMmprojLoad(
         return -3;
     }
     s->mtmd = m;
+    s->mtmd_gpu = on_gpu;
     LOGI("mmproj loaded in %.0f ms (mrope=%d)", now_ms() - t0, mtmd_decode_use_mrope(m) ? 1 : 0);
-    LOGIMG("mmproj load %.0f ms (threads=%d, image_max_tokens=%d, non_causal=%d)", now_ms() - t0,
-           mp.n_threads, image_max_tokens, mtmd_decode_use_non_causal(m, nullptr) ? 1 : 0);
+    LOGIMG("mmproj load %.0f ms on %s (threads=%d, image_max_tokens=%d, non_causal=%d)", now_ms() - t0,
+           backend_name(on_gpu), mp.n_threads, image_max_tokens, mtmd_decode_use_non_causal(m, nullptr) ? 1 : 0);
     return 0;
 }
 
@@ -766,9 +929,9 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerateImage(
     mtmd_input_chunks_free(chunks);
     const double prompt_ms = now_ms() - t_prompt0;
     LOGIMG("image %dx%d -> %d image tokens (%d prompt tokens, %zu chunks): tokenize %.0f ms, "
-           "encode %.0f ms, image prefill %.0f ms, text prefill %.0f ms, batch %d",
-           width, height, n_image_tokens, n_prompt, n_chunks, tokenize_ms, encode_ms, image_decode_ms,
-           text_ms, s->n_batch);
+           "encode %.0f ms [%s], image prefill %.0f ms [%s], text prefill %.0f ms [%s], batch %d",
+           width, height, n_image_tokens, n_prompt, n_chunks, tokenize_ms, encode_ms, backend_name(s->mtmd_gpu),
+           image_decode_ms, backend_name(s->text_gpu), text_ms, backend_name(s->text_gpu), s->n_batch);
 
     stage(LT_STAGE_GENERATE);
     const llama_vocab * vocab = llama_model_get_vocab(s->model);
@@ -776,9 +939,69 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerateImage(
     const GenResult g = generate_loop(env, s, smpl, callback, on_token, n_prompt, max_tokens);
     llama_sampler_free(smpl);
     log_perf(s, "image", n_prompt, prompt_ms, g);
-    LOGIMG("generate %d tok in %.0f ms (%.1f tok/s); total %.0f ms", g.n_gen, g.gen_ms,
-           g.gen_ms > 0 ? g.n_gen * 1000.0 / g.gen_ms : 0.0, now_ms() - t_start);
+    LOGIMG("generate %d tok in %.0f ms (%.1f tok/s) [%s]; total %.0f ms", g.n_gen, g.gen_ms,
+           g.gen_ms > 0 ? g.n_gen * 1000.0 / g.gen_ms : 0.0, backend_name(s->text_gpu), now_ms() - t_start);
     return make_result(env, g.status, n_prompt, prompt_ms, g.n_gen, g.gen_ms, g.reason);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Experimental GPU (OpenCL / Adreno)
+// ------------------------------------------------------------------------------------------------
+
+// Loads the OpenCL backend module once and returns the GPU's description ("" = no usable GPU:
+// non-arm64 build, no libOpenCL.so, or no Adreno device). `cache_dir` holds the compiled kernel
+// binaries so only the first GPU use pays for the kernel build.
+JNIEXPORT jstring JNICALL
+Java_com_nekohome_translate_llama_LlamaNative_nativeGpuProbe(JNIEnv * env, jobject, jstring jcache_dir) {
+#if LT_OPENCL && LT_BACKEND_DL
+    if (!g_gpu_probed && g_backend_ready) {
+        g_gpu_probed = true;
+        const char * cache = env->GetStringUTFChars(jcache_dir, nullptr);
+        if (cache != nullptr && cache[0] != '\0') setenv("GGML_OPENCL_KERNEL_CACHE_DIR", cache, 1);
+        if (cache != nullptr) env->ReleaseStringUTFChars(jcache_dir, cache);
+        const std::string path = g_lib_dir + "/libneko-opencl.so";
+        if (access(path.c_str(), R_OK) != 0) {
+            LOGI("GPU: %s not present", path.c_str());
+        } else {
+            const double t0 = now_ms();
+            ggml_backend_reg_t reg = ggml_backend_load(path.c_str());
+            if (reg == nullptr) {
+                LOGI("GPU: OpenCL backend unavailable (no usable libOpenCL.so on this device)");
+            } else {
+                for (size_t i = 0; i < ggml_backend_reg_dev_count(reg); ++i) {
+                    ggml_backend_dev_t d = ggml_backend_reg_dev_get(reg, i);
+                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { g_gpu_dev = d; break; }
+                }
+                LOGI("GPU: OpenCL probe %.0f ms, device: %s", now_ms() - t0,
+                     g_gpu_dev ? ggml_backend_dev_description(g_gpu_dev) : "none");
+            }
+        }
+    }
+    if (g_gpu_dev == nullptr) return env->NewStringUTF("");
+    std::string desc = ggml_backend_dev_description(g_gpu_dev);
+    std::string clean;
+    for (char c : desc) clean.push_back((c >= 0x20 && c < 0x7f) ? c : '?');   // NewStringUTF wants ASCII here
+    return env->NewStringUTF(clean.c_str());
+#else
+    (void) jcache_dir;
+    return env->NewStringUTF("");
+#endif
+}
+
+// GPU vs CPU check of the quantized matmul kernels (see gpu_self_test). Returns "" when it passed,
+// else the reason. Takes a few seconds on first use (kernel build), well under a second after.
+JNIEXPORT jstring JNICALL
+Java_com_nekohome_translate_llama_LlamaNative_nativeGpuSelfTest(JNIEnv * env, jobject) {
+    if (g_gpu_dev == nullptr) return env->NewStringUTF("no GPU device");
+    return env->NewStringUTF(gpu_self_test(g_gpu_dev).c_str());
+}
+
+// Where the session runs: bit 0 = text model on the GPU, bit 1 = vision encoder on the GPU.
+JNIEXPORT jint JNICALL
+Java_com_nekohome_translate_llama_LlamaNative_nativeBackendFlags(JNIEnv *, jobject, jlong handle) {
+    Session * s = as_session(handle);
+    if (s == nullptr) return 0;
+    return (s->text_gpu ? 1 : 0) | (s->mtmd != nullptr && s->mtmd_gpu ? 2 : 0);
 }
 
 } // extern "C"

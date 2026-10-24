@@ -13,6 +13,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(LT_CPU_ALL_VARIANTS "Build all Android arm64 ggml CPU variants and pick at runtime" ON)
 set(LT_CPU_ARCH "armv8.6-a+dotprod+i8mm+fp16" CACHE STRING "-march used when LT_CPU_ALL_VARIANTS=OFF")
 option(LT_KLEIDIAI "Enable Arm KleidiAI kernels in the ggml CPU backend" ON)
+option(LT_OPENCL "arm64-v8a: also build ggml's OpenCL backend (Adreno GPU, experimental, loaded on demand)" ON)
 
 # ggml options must be set before add_subdirectory (CMP0077: option() honors normal variables).
 set(GGML_SYSTEM_ARCH "ARM")
@@ -29,12 +30,29 @@ if (ANDROID_ABI STREQUAL "arm64-v8a")
         set(GGML_CPU_ALL_VARIANTS OFF)
         set(GGML_CPU_ARM_ARCH "${LT_CPU_ARCH}" CACHE STRING "" FORCE)
     endif()
-    message(STATUS "NekoTranslate arm64-v8a: all CPU variants=${LT_CPU_ALL_VARIANTS} arch=${LT_CPU_ARCH} kleidiai=${LT_KLEIDIAI}")
+    # Experimental Adreno GPU acceleration: ggml's OpenCL backend as a separate module
+    # (libneko-opencl.so) that llama_jni.cpp dlopen()s only when the user turns it on. It needs
+    # GGML_BACKEND_DL: linked into libggml, a missing libOpenCL.so would stop the app from starting.
+    set(LT_OPENCL_ON OFF)
+    if (LT_OPENCL AND LT_CPU_ALL_VARIANTS)
+        set(LT_OPENCL_ON ON)
+        include(${CMAKE_CURRENT_LIST_DIR}/opencl-stub.cmake)
+        lt_opencl_stub(${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/OpenCL-Headers)
+        set(OpenCL_INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/OpenCL-Headers CACHE PATH "" FORCE)
+        set(OpenCL_LIBRARY lt_opencl_stub CACHE STRING "" FORCE)
+        set(GGML_OPENCL ON)
+        set(GGML_OPENCL_EMBED_KERNELS ON)       # kernels compiled by the driver at first use
+        set(GGML_OPENCL_USE_ADRENO_KERNELS ON)  # Adreno-tuned matmuls; other GPUs are dropped
+    elseif (LT_OPENCL)
+        message(WARNING "NekoTranslate: LT_OPENCL needs LT_CPU_ALL_VARIANTS=ON (dynamically loaded backends); building without the OpenCL backend")
+    endif()
+    message(STATUS "NekoTranslate arm64-v8a: all CPU variants=${LT_CPU_ALL_VARIANTS} arch=${LT_CPU_ARCH} kleidiai=${LT_KLEIDIAI} opencl=${LT_OPENCL_ON}")
 elseif (ANDROID_ABI STREQUAL "armeabi-v7a")
     # 32-bit ARM: one statically linked CPU backend. ggml's runtime variants, the arm64 -march
     # flags (dotprod/i8mm/sve/sme) and KleidiAI are AArch64-only. NEON + VFPv4 (FMA, fp16
     # conversion) is what ggml's ARM SIMD path needs and every Android 10+ armv7 core has it.
     set(LT_DL OFF)
+    set(LT_OPENCL_ON OFF)   # CPU only on 32-bit
     set(GGML_BACKEND_DL OFF)
     set(GGML_CPU_ALL_VARIANTS OFF)
     set(GGML_CPU_KLEIDIAI OFF)
@@ -60,6 +78,12 @@ set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_SRC} build-llama)
 
+if (LT_OPENCL_ON)
+    # A name ggml_backend_load_all_from_path() does not match ("libggml-opencl[-*].so"), so the
+    # backend is never probed at start-up; llama_jni.cpp loads it by path on demand.
+    set_target_properties(ggml-opencl PROPERTIES OUTPUT_NAME "neko-opencl")
+endif()
+
 # Vision encoder speed-up: compile a patched copy of tools/mtmd/clip.cpp that puts the mmproj's
 # quantized matmul weights in ggml's repacked CPU buffers (see patch-clip-repack.cmake).
 option(LT_CLIP_REPACK "Patch clip.cpp to use repacked (i8mm/dotprod) CPU weights" ON)
@@ -78,7 +102,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         llama_jni.cpp)
 
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-        LT_BACKEND_DL=$<BOOL:${LT_DL}>)
+        LT_BACKEND_DL=$<BOOL:${LT_DL}>
+        LT_OPENCL=$<BOOL:${LT_OPENCL_ON}>)
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${LLAMA_SRC}/include

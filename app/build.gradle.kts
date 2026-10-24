@@ -92,6 +92,9 @@ android {
             // ggml CPU backend variants are dlopen'ed by path from nativeLibraryDir,
             // so native libs must be extracted at install time.
             useLegacyPackaging = true
+            // Link-time OpenCL stub from :llama (opencl-stub.cmake). The real libOpenCL.so is the
+            // device vendor's; shipping the stub would shadow it.
+            excludes += "**/libOpenCL.so"
         }
     }
 }

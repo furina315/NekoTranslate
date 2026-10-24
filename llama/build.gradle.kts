@@ -5,6 +5,8 @@ plugins {
 val cpuAllVariants = (findProperty("lt.cpuAllVariants") as String?)?.toBoolean() ?: true
 val cpuArch = (findProperty("lt.cpuArch") as String?) ?: "armv8.6-a+dotprod+i8mm+fp16"
 val kleidiai = (findProperty("lt.kleidiai") as String?)?.toBoolean() ?: true
+// Experimental Adreno GPU backend (ggml OpenCL), arm64-v8a only; -Plt.opencl=false leaves it out.
+val opencl = (findProperty("lt.opencl") as String?)?.toBoolean() ?: true
 // Same ABI list as :app (see app/build.gradle.kts).
 val abis = ((findProperty("lt.abis") as String?) ?: "armeabi-v7a,arm64-v8a")
     .split(",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -41,12 +43,14 @@ android {
                 arguments += "-DGGML_NATIVE=OFF"
                 arguments += "-DGGML_LLAMAFILE=OFF"
                 arguments += "-DGGML_VULKAN=OFF"
-                arguments += "-DGGML_OPENCL=OFF"
                 arguments += "-DLT_CPU_ALL_VARIANTS=${if (cpuAllVariants) "ON" else "OFF"}"
                 arguments += "-DLT_CPU_ARCH=$cpuArch"
                 // KleidiAI and the multi-variant CPU backend apply to arm64-v8a only; CMakeLists.txt
                 // switches armeabi-v7a to a single NEON (vfpv4) backend by itself.
                 arguments += "-DLT_KLEIDIAI=${if (kleidiai) "ON" else "OFF"}"
+                // OpenCL: arm64-v8a only (CMakeLists.txt ignores it for armeabi-v7a), built as a
+                // separately loaded module so devices without libOpenCL.so are unaffected.
+                arguments += "-DLT_OPENCL=${if (opencl) "ON" else "OFF"}"
             }
         }
     }

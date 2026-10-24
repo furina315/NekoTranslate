@@ -18,6 +18,8 @@ data class LoadParams(
      */
     val nBatch: Int = 512,
     val useMmap: Boolean = true,
+    /** Experimental GPU acceleration; see [GpuMode]. Falls back to the CPU natively if unavailable. */
+    val gpuMode: GpuMode = GpuMode.OFF,
 ) {
     companion object {
         /** Generation threads: see [CpuCores.generationThreads]. */
@@ -115,6 +117,7 @@ class LlamaSession private constructor(handle: Long) : Closeable {
             val h = LlamaNative.nativeLoad(
                 path.toByteArray(Charsets.UTF_8), -1,
                 params.nCtx, params.nThreads, params.nThreadsBatch, params.nBatch, params.useMmap,
+                params.gpuMode.nativeCode,
             )
             if (h == 0L) throw IllegalStateException("Failed to load model: $path")
             return LlamaSession(h)
@@ -124,6 +127,7 @@ class LlamaSession private constructor(handle: Long) : Closeable {
         fun loadFromFd(fd: Int, params: LoadParams = LoadParams()): LlamaSession {
             val h = LlamaNative.nativeLoad(
                 null, fd, params.nCtx, params.nThreads, params.nThreadsBatch, params.nBatch, params.useMmap,
+                params.gpuMode.nativeCode,
             )
             if (h == 0L) throw IllegalStateException("Failed to load model from fd $fd")
             return LlamaSession(h)
@@ -205,15 +209,22 @@ class LlamaSession private constructor(handle: Long) : Closeable {
         return stats(r)
     }
 
+    /** Text model (prefill + generation) actually runs on the GPU. */
+    val textOnGpu: Boolean get() = handle != 0L && (LlamaNative.nativeBackendFlags(handle) and 1) != 0
+
+    /** The loaded vision encoder actually runs on the GPU. */
+    val encoderOnGpu: Boolean get() = handle != 0L && (LlamaNative.nativeBackendFlags(handle) and 2) != 0
+
     /** True while a vision projector is loaded for this session. */
     val hasMmproj: Boolean get() = handle != 0L && LlamaNative.nativeMmprojLoaded(handle)
 
     /**
      * Loads the vision projector [path] (an mmproj GGUF) for this model, replacing any loaded one.
-     * [imageMaxTokens] > 0 caps the image tokens per image. Throws on failure.
+     * [imageMaxTokens] > 0 caps the image tokens per image. [useGpu] runs the encoder on the GPU
+     * when one was probed (CPU fallback if its init fails; see [encoderOnGpu]). Throws on failure.
      */
-    fun loadMmproj(path: String, nThreads: Int, imageMaxTokens: Int) {
-        when (val rc = LlamaNative.nativeMmprojLoad(requireHandle(), path.toByteArray(Charsets.UTF_8), nThreads, imageMaxTokens)) {
+    fun loadMmproj(path: String, nThreads: Int, imageMaxTokens: Int, useGpu: Boolean = false) {
+        when (val rc = LlamaNative.nativeMmprojLoad(requireHandle(), path.toByteArray(Charsets.UTF_8), nThreads, imageMaxTokens, useGpu)) {
             0 -> Unit
             -3 -> throw IllegalStateException("Not a vision projector: $path")
             else -> throw IllegalStateException("Failed to load mmproj ($rc): $path")

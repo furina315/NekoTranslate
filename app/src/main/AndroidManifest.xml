@@ -13,6 +13,11 @@
         android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.NekoTranslate">
+        <!-- Experimental GPU acceleration: the vendor OpenCL driver (Adreno). Android 12+ only lets
+             apps load vendor public libraries they declare; optional, so devices without it are fine. -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

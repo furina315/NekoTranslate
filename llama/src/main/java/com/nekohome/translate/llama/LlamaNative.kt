@@ -23,6 +23,8 @@ internal object LlamaNative {
         nThreadsBatch: Int,
         nBatch: Int,
         useMmap: Boolean,
+        /** [GpuMode.nativeCode]; the text model goes to the GPU only for [GpuMode.ALL]. */
+        gpuMode: Int,
     ): Long
 
     external fun nativeFree(handle: Long)
@@ -59,8 +61,22 @@ internal object LlamaNative {
     external fun nativeMediaMarker(): ByteArray
 
     /** @return 0 ok, -1 bad handle, -2 load failed, -3 no vision encoder in the file */
-    external fun nativeMmprojLoad(handle: Long, path: ByteArray, nThreads: Int, imageMaxTokens: Int): Int
+    external fun nativeMmprojLoad(handle: Long, path: ByteArray, nThreads: Int, imageMaxTokens: Int, useGpu: Boolean): Int
     external fun nativeMmprojFree(handle: Long)
+
+    // ---- experimental GPU (OpenCL / Adreno, arm64-v8a)
+
+    /**
+     * Loads the OpenCL backend module (once) and returns the GPU description, or "" when there is
+     * no usable GPU. [kernelCacheDir] stores compiled kernel binaries between runs.
+     */
+    external fun nativeGpuProbe(kernelCacheDir: String): String
+
+    /** Quantized matmul GPU-vs-CPU check; "" = passed, else the reason. Needs a probed GPU. */
+    external fun nativeGpuSelfTest(): String
+
+    /** Bit 0: text model on the GPU; bit 1: vision encoder on the GPU. */
+    external fun nativeBackendFlags(handle: Long): Int
     external fun nativeMmprojLoaded(handle: Long): Boolean
 
     /**

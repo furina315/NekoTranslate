@@ -153,6 +153,13 @@ jobs:
           has arm64-v8a   armeabi-v7a && fail "v8a APK contains armeabi-v7a libs"
           has universal   armeabi-v7a || fail "universal APK lacks armeabi-v7a libs"
           has universal   arm64-v8a   || fail "universal APK lacks arm64-v8a libs"
+          # Experimental GPU backend: arm64-v8a only, and never the link-time OpenCL stub (it would
+          # shadow the vendor's libOpenCL.so).
+          grep -q "lib/arm64-v8a/libneko-opencl.so" list-arm64-v8a.txt || fail "v8a APK lacks the OpenCL backend"
+          grep -q "lib/armeabi-v7a/libneko-opencl.so" list-armeabi-v7a.txt && fail "v7a APK contains the OpenCL backend"
+          if grep -q "libOpenCL.so" list-arm64-v8a.txt list-armeabi-v7a.txt list-universal.txt; then
+            fail "an APK contains libOpenCL.so (link stub must not ship)"
+          fi
           ls -la dist
 
       - name: Write release notes
