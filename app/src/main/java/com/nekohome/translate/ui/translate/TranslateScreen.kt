@@ -2,11 +2,16 @@
 
 package com.nekohome.translate.ui.translate
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
@@ -24,6 +29,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,6 +59,8 @@ import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
@@ -64,6 +72,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -84,8 +93,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -130,6 +142,7 @@ fun TranslateScreen(
         // so new tokens recompose just that Text, not this screen.
         val output = vm.output.collectAsStateWithLifecycle()
         val outputProvider = remember(output) { { output.value } }
+        val imagePicker = rememberImagePicker(vm)
         if (state.loaded == null) {
             NoModelState(
                 state = state,
@@ -166,10 +179,16 @@ fun TranslateScreen(
                     input = state.input,
                     isTranslating = state.isTranslating,
                     canTranslate = state.canTranslate,
+                    imageSupported = state.imageSupported,
+                    imageThumb = state.imageThumb,
+                    isPreparingImage = state.isPreparingImage,
                     onInput = vm::setInput,
                     onClear = vm::clearInput,
                     onTranslate = vm::translate,
                     onStop = vm::stop,
+                    onCamera = imagePicker.camera,
+                    onGallery = imagePicker.gallery,
+                    onClearImage = vm::clearImage,
                 )
                 val reduceMotion = LocalReduceMotion.current
                 AnimatedVisibility(
@@ -372,47 +391,122 @@ private fun LanguageButton(
 private fun languageLabel(lang: Language): String =
     if (lang.isAuto) stringResource(R.string.translate_auto_detect) else lang.nameZh
 
+/** Camera / gallery launchers for image translation. */
+private class ImagePicker(val camera: () -> Unit, val gallery: () -> Unit)
+
+@Composable
+private fun rememberImagePicker(vm: MainViewModel): ImagePicker {
+    val context = LocalContext.current
+    val noCamera = stringResource(R.string.translate_image_no_camera)
+    // Survives the activity being recreated while the camera app is in front.
+    var pendingCameraUri by rememberSaveable { mutableStateOf<String?>(null) }
+    val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        vm.onCameraResult(ok, pendingCameraUri?.let(Uri::parse))
+        pendingCameraUri = null
+    }
+    // System Photo Picker (falls back to the document picker where unavailable); no permission needed.
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) vm.pickImage(uri)
+    }
+    return remember(vm, takePicture, pickMedia) {
+        ImagePicker(
+            camera = {
+                val uri = vm.cameraCaptureUri()
+                pendingCameraUri = uri.toString()
+                try {
+                    takePicture.launch(uri)
+                } catch (e: ActivityNotFoundException) {
+                    pendingCameraUri = null
+                    Toast.makeText(context, noCamera, Toast.LENGTH_SHORT).show()
+                }
+            },
+            gallery = {
+                pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+        )
+    }
+}
+
 @Composable
 private fun InputCard(
     input: String,
     isTranslating: Boolean,
     canTranslate: Boolean,
+    imageSupported: Boolean,
+    imageThumb: ImageBitmap?,
+    isPreparingImage: Boolean,
     onInput: (String) -> Unit,
     onClear: () -> Unit,
     onTranslate: () -> Unit,
     onStop: () -> Unit,
+    onCamera: () -> Unit,
+    onGallery: () -> Unit,
+    onClearImage: () -> Unit,
 ) {
     val context = LocalContext.current
+    val imageMode = imageThumb != null || isPreparingImage
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        TextField(
-            value = input,
-            onValueChange = onInput,
-            placeholder = { Text(stringResource(R.string.translate_input_hint)) },
-            textStyle = MaterialTheme.typography.titleMedium,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 140.dp),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
-                disabledContainerColor = Color.Transparent,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                disabledIndicatorColor = Color.Transparent,
-            ),
-        )
+        val reduceMotionSource = LocalReduceMotion.current // read outside the transitionSpec lambda
+        AnimatedContent(
+            targetState = imageMode,
+            transitionSpec = {
+                if (reduceMotionSource) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    (fadeIn(Springs.smooth(Spring.StiffnessMedium)) + scaleIn(Springs.gentle(Spring.StiffnessMedium), initialScale = 0.96f))
+                        .togetherWith(fadeOut(Springs.smooth(Spring.StiffnessMedium)))
+                        .using(SizeTransform(clip = true) { _, _ -> Springs.gentle(Spring.StiffnessMedium) })
+                }
+            },
+            label = "sourceMode",
+        ) { showImage ->
+            if (showImage) {
+                SourceImage(
+                    thumb = imageThumb,
+                    isPreparing = isPreparingImage,
+                    clearEnabled = !isTranslating,
+                    onClear = onClearImage,
+                )
+            } else {
+                TextField(
+                    value = input,
+                    onValueChange = onInput,
+                    placeholder = { Text(stringResource(R.string.translate_input_hint)) },
+                    textStyle = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 140.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+                )
+            }
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(start = 4.dp, end = 12.dp, bottom = 12.dp),
         ) {
-            if (input.isEmpty()) {
+            if (imageSupported) {
+                ImageSourceButton(
+                    enabled = !isTranslating && !isPreparingImage,
+                    onCamera = onCamera,
+                    onGallery = onGallery,
+                )
+            }
+            // In image mode the thumbnail's own close button clears the source.
+            if (!imageMode && input.isEmpty()) {
                 IconButton(onClick = { pasteText(context)?.let(onInput) }) {
                     Icon(Icons.Outlined.ContentPaste, contentDescription = stringResource(R.string.translate_paste))
                 }
-            } else {
+            } else if (!imageMode) {
                 IconButton(onClick = onClear, enabled = !isTranslating) {
                     Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.translate_clear))
                 }
@@ -461,6 +555,98 @@ private fun InputCard(
                     }
                 }
             }
+        }
+    }
+}
+
+/** The picked image in the source area: thumbnail with a clear button, or a spinner while decoding. */
+@Composable
+private fun SourceImage(
+    thumb: ImageBitmap?,
+    isPreparing: Boolean,
+    clearEnabled: Boolean,
+    onClear: () -> Unit,
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 140.dp)
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+    ) {
+        if (thumb != null) {
+            Box {
+                Image(
+                    bitmap = thumb,
+                    contentDescription = stringResource(R.string.translate_image_desc),
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .heightIn(max = 220.dp)
+                        .clip(MaterialTheme.shapes.large),
+                )
+                val src = remember { MutableInteractionSource() }
+                FilledTonalIconButton(
+                    onClick = onClear,
+                    enabled = clearEnabled,
+                    interactionSource = src,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(32.dp)
+                        .bounceClick(src, pressedScale = 0.85f),
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = stringResource(R.string.translate_image_remove),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        } else if (isPreparing) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.translate_image_preparing),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** The single image-translation entry: a camera icon opening 拍照 / 从相册选择. */
+@Composable
+private fun ImageSourceButton(enabled: Boolean, onCamera: () -> Unit, onGallery: () -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        val src = remember { MutableInteractionSource() }
+        IconButton(
+            onClick = { expanded = true },
+            enabled = enabled,
+            interactionSource = src,
+            modifier = Modifier.bounceClick(src, pressedScale = 0.85f),
+        ) {
+            Icon(Icons.Outlined.PhotoCamera, contentDescription = stringResource(R.string.translate_image_entry))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.translate_image_camera)) },
+                leadingIcon = { Icon(Icons.Outlined.PhotoCamera, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onCamera()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.translate_image_gallery)) },
+                leadingIcon = { Icon(Icons.Outlined.PhotoLibrary, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onGallery()
+                },
+            )
         }
     }
 }

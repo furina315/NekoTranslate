@@ -33,6 +33,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FileOpen
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -81,6 +83,14 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
         if (uri != null) vm.importModel(uri)
     }
     val launchImport = { picker.launch(arrayOf("*/*")) }
+    // Vision projector (mmproj) picker; remembers which model card asked for it.
+    var mmprojTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    val mmprojPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        val target = state.models.firstOrNull { it.fileName == mmprojTarget }
+        if (uri != null && target != null) vm.attachMmproj(target, uri)
+        mmprojTarget = null
+    }
+    var pendingMmprojRemove by remember { mutableStateOf<LocalModel?>(null) }
     var pendingDelete by remember { mutableStateOf<LocalModel?>(null) }
     var showRuntimeInfo by rememberSaveable { mutableStateOf(false) }
 
@@ -130,6 +140,15 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
                     manualProfile = params.profileId != null,
                     profileName = state.profileFor(model).displayName,
                     loadInfo = if (state.isLoaded(model)) state.loadInfo else "",
+                    mmprojName = state.mmprojFor(model),
+                    mmprojSize = state.mmprojFor(model)?.let { state.mmprojFiles[it] },
+                    mmprojImporting = state.mmprojImportFor == model.fileName,
+                    importBusy = state.importProgress != null,
+                    onAttachMmproj = {
+                        mmprojTarget = model.fileName
+                        mmprojPicker.launch(arrayOf("*/*"))
+                    },
+                    onRemoveMmproj = { pendingMmprojRemove = model },
                     onSelect = { vm.selectModel(model) },
                     onLoad = { vm.loadModel(model) },
                     onUnload = vm::unloadModel,
@@ -196,6 +215,26 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
                 }
             }
         }
+    }
+
+    pendingMmprojRemove?.let { model ->
+        AlertDialog(
+            onDismissRequest = { pendingMmprojRemove = null },
+            icon = { Icon(Icons.Outlined.LinkOff, contentDescription = null) },
+            title = { Text(stringResource(R.string.models_mmproj_remove_title)) },
+            text = { Text(stringResource(R.string.models_mmproj_remove_body, model.file.nameWithoutExtension)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.removeMmproj(model)
+                    pendingMmprojRemove = null
+                }) {
+                    Text(stringResource(R.string.models_mmproj_remove), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingMmprojRemove = null }) { Text(stringResource(R.string.models_cancel)) }
+            },
+        )
     }
 
     pendingDelete?.let { model ->
@@ -298,6 +337,12 @@ private fun ModelCard(
     manualProfile: Boolean,
     profileName: String,
     loadInfo: String,
+    mmprojName: String?,
+    mmprojSize: Long?,
+    mmprojImporting: Boolean,
+    importBusy: Boolean,
+    onAttachMmproj: () -> Unit,
+    onRemoveMmproj: () -> Unit,
     onSelect: () -> Unit,
     onLoad: () -> Unit,
     onUnload: () -> Unit,
@@ -360,6 +405,14 @@ private fun ModelCard(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
+            MmprojRow(
+                name = mmprojName,
+                sizeBytes = mmprojSize,
+                importing = mmprojImporting,
+                enabled = !isTranslating && !importBusy,
+                onAttach = onAttachMmproj,
+                onRemove = onRemoveMmproj,
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onDelete, enabled = !busy) {
                     Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.models_delete))
@@ -381,6 +434,59 @@ private fun ModelCard(
                     }
                 }
                 Spacer(Modifier.width(8.dp))
+            }
+        }
+    }
+}
+
+/** Image translation status of one model: its associated vision projector (mmproj), or a button to add one. */
+@Composable
+private fun MmprojRow(
+    name: String?,
+    sizeBytes: Long?,
+    importing: Boolean,
+    enabled: Boolean,
+    onAttach: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, end = 4.dp),
+    ) {
+        Icon(
+            Icons.Outlined.Image,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = if (name != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            when {
+                importing -> stringResource(R.string.models_mmproj_importing)
+                name != null -> stringResource(
+                    R.string.models_mmproj_attached,
+                    listOfNotNull(name.removeSuffix(".gguf"), sizeBytes?.let { Format.size(it) }).joinToString(" · "),
+                )
+                else -> stringResource(R.string.models_mmproj_none)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (name != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        val src = remember { MutableInteractionSource() }
+        if (name != null) {
+            IconButton(onClick = onRemove, enabled = enabled, interactionSource = src, modifier = Modifier.bounceClick(src, 0.85f)) {
+                Icon(Icons.Outlined.LinkOff, contentDescription = stringResource(R.string.models_mmproj_remove))
+            }
+        } else if (importing) {
+            CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
+        } else {
+            TextButton(onClick = onAttach, enabled = enabled, interactionSource = src, modifier = Modifier.bounceClick(src)) {
+                Text(stringResource(R.string.models_mmproj_attach))
             }
         }
     }
