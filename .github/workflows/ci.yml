@@ -1,11 +1,11 @@
 name: CI (unit tests)
 
-# Every push / PR to main: compile the Kotlin code and run the JVM unit tests. No NDK, no CMake,
+# Every push / PR to main, and every push to dev: compile the Kotlin code and run the JVM unit tests. No NDK, no CMake,
 # no APK (-Plt.skipNative=true removes :llama's externalNativeBuild), so it finishes in a few minutes.
 # APKs are built by release.yml (push a v* tag, or run it manually).
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
     # Docs-only changes skip CI. Add [skip ci] to a commit message to skip any push.
     paths-ignore:
       - '**.md'
