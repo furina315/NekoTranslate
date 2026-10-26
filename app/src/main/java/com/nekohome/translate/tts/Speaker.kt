@@ -22,16 +22,21 @@ sealed interface SpeakProblem {
     /** No TTS engine installed / it failed to start. */
     data object NoEngine : SpeakProblem
 
-    /** The engine has no voice for [code]; [missingData] = supported but the voice data isn't downloaded. */
-    data class MissingVoice(val code: String, val missingData: Boolean) : SpeakProblem
+    /**
+     * The engine has no voice for [code]; [missingData] = supported but the voice data isn't
+     * downloaded. [chinese] = Chinese text and the engine lacks a Chinese voice altogether
+     * (LANG_MISSING_DATA / LANG_NOT_SUPPORTED): worth suggesting another engine.
+     */
+    data class MissingVoice(val code: String, val missingData: Boolean, val chinese: Boolean = false) : SpeakProblem
 
     data object Failed : SpeakProblem
 }
 
 /**
- * Thin wrapper around the system [TextToSpeech] engine. The engine is created lazily on the first
- * request (binding it costs a few hundred ms and most sessions never speak) and released by
- * [shutdown]. Call everything from the main thread; [speaking] may change from engine threads.
+ * Thin wrapper around a [TextToSpeech] engine (the system default, or the one picked with
+ * [setEngine]). The engine is created lazily on the first request (binding it costs a few hundred
+ * ms and most sessions never speak) and released by [shutdown] or when the engine changes. Call
+ * everything from the main thread; [speaking] may change from engine threads.
  */
 class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
 
@@ -46,6 +51,13 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
     private class Request(val target: SpeakTarget, val text: String, val code: String)
 
     private var tts: TextToSpeech? = null
+
+    /** Engine package to bind (null = system default) and the identity of the current binding. */
+    private var enginePackage: String? = null
+    private var bindingKey: String? = null
+
+    /** [bindingKey] the live [tts] instance was created with. */
+    private var instanceKey: String? = null
     private var ready = false
     private var pending: Request? = null
 
@@ -69,6 +81,17 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
         _speaking.value = null
     }
 
+    /**
+     * Uses [packageName] (null = the system default engine) from the next request on. When the
+     * binding changes ([key], see [TtsEngineChoice.bindingKey]) the old instance is stopped and
+     * released; the new one is created lazily like the first.
+     */
+    fun setEngine(packageName: String?, key: String = TtsEngineChoice.bindingKey(packageName, null)) {
+        bindingKey = key
+        enginePackage = packageName
+        if (tts != null && instanceKey != key) shutdown()
+    }
+
     fun shutdown() {
         stop()
         tts?.shutdown()
@@ -88,16 +111,26 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
         pending = request
         _speaking.value = request.target
         if (engine == null) {
-            tts = try {
-                TextToSpeech(appContext) { status -> main.post { onInit(status) } }
+            var created: TextToSpeech? = null
+            val listener = TextToSpeech.OnInitListener { status -> main.post { onInit(created, status) } }
+            created = try {
+                val pkg = enginePackage
+                if (pkg != null) TextToSpeech(appContext, listener, pkg) else TextToSpeech(appContext, listener)
             } catch (e: Exception) {
                 null
             }
-            if (tts == null) onInit(TextToSpeech.ERROR)
+            tts = created
+            instanceKey = bindingKey
+            if (created == null) onInit(null, TextToSpeech.ERROR)
         }
     }
 
-    private fun onInit(status: Int) {
+    private fun onInit(instance: TextToSpeech?, status: Int) {
+        // A callback from an instance released by an engine switch: ignore it.
+        if (instance != null && instance !== tts) {
+            instance.shutdown()
+            return
+        }
         val engine = tts
         val request = pending
         pending = null
@@ -122,15 +155,21 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
 
     private fun start(engine: TextToSpeech, request: Request) {
         val locale = TtsLocales.localeFor(request.code)
-        var missingData = false
+        val availability = ArrayList<Int>(2)
         val chosen = sequenceOf(locale, TtsLocales.fallbackFor(locale)).filterNotNull().firstOrNull { l ->
             val r = engine.isLanguageAvailable(l)
-            if (r == TextToSpeech.LANG_MISSING_DATA) missingData = true
+            availability += r
             r >= TextToSpeech.LANG_AVAILABLE && engine.setLanguage(l) >= TextToSpeech.LANG_AVAILABLE
         }
         if (chosen == null) {
             _speaking.value = null
-            onProblem(SpeakProblem.MissingVoice(request.code, missingData))
+            onProblem(
+                SpeakProblem.MissingVoice(
+                    code = request.code,
+                    missingData = TextToSpeech.LANG_MISSING_DATA in availability,
+                    chinese = TtsEngineChoice.lacksChineseVoice(locale, availability),
+                ),
+            )
             return
         }
         val maxLen = minOf(TextToSpeech.getMaxSpeechInputLength(), MAX_CHUNK)
@@ -178,6 +217,18 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
     private companion object {
         /** Shorter utterances start sooner; the engine queues the rest seamlessly. */
         const val MAX_CHUNK = 1000
+    }
+}
+
+/** Opens the system 文字转语音输出 page (preferred engine), falling back to the Settings app. */
+fun openSystemTtsSettings(context: Context) {
+    for (intent in listOf(Intent("com.android.settings.TTS_SETTINGS"), Intent(Settings.ACTION_SETTINGS))) {
+        try {
+            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return
+        } catch (_: ActivityNotFoundException) {
+        } catch (_: SecurityException) {
+        }
     }
 }
 

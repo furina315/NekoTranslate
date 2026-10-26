@@ -9,9 +9,25 @@
   - 按所选语言自动挑选语音；源语言为「自动检测」时按文字的书写系统推测语言（中 / 日 / 韩 / 俄 / 阿拉伯 / 泰等，拉丁字母默认按英语读）。
   - 系统引擎缺少该语言的语音包或不支持时给出提示，可一键跳转系统朗读（TTS）设置；粤语缺语音时自动改用香港中文语音。
   - 切换到其他页面、重新翻译、修改原文、切换 / 交换语言时自动停止；长文本自动分段排队朗读。
+- **朗读引擎选择**：「设置 → 朗读 → 朗读引擎」列出本机已安装的朗读引擎（带图标），第一项「跟随系统默认」（默认选中）；可只为 NekoTranslate 单独指定引擎，不改动系统设置。
+  - 所选引擎被卸载后自动回退到系统默认；从系统设置或安装页返回 App 时自动刷新引擎列表，新装的引擎立即可选。
+  - 「设置 → 朗读」新增「系统 TTS 设置」入口，直达系统「文字转语音输出」。
+- **中文语音安装引导**：朗读中文（简体 / 繁体 / 粤语）时，若当前引擎没有中文语音，弹出底部面板推荐安装 sherpa-onnx Kokoro 多语言离线语音引擎（中英混读、离线免费、多个中文音色）。
+  - 提供国内镜像（hf-mirror）/ HuggingFace 下载、官方引擎列表、源码链接；非 arm64-v8a 设备只显示官方引擎列表。
+  - 面板内可「打开系统 TTS 设置」「在应用内选择引擎」或「不再提示」（可在「设置 → 朗读」里重新开启）。
 
 ### 变更
 - Nightly 版本改为每日 tag（`v0.3.0-nightly.N`）：推送 nightly tag 不再自动构建，手动运行「Release APKs」（main）时若当前提交带 nightly tag，就以该 tag 发布预发布版（versionCode = 最新正式版 + N，说明 = tag 消息）；否则保持原来的滚动 nightly。
+- 朗读中文缺少语音时改为弹出上述引导面板；其他语言缺语音包仍是原来的提示条（带「去设置」）；选了「不再提示」后中文也回到提示条。
+- 切换朗读引擎时释放旧引擎实例，下次朗读按新引擎重新创建。
+
+### 推荐朗读设置
+1. 安装 sherpa-onnx Kokoro 多语言引擎（arm64-v8a，1.13.8）：国内用 [hf-mirror 下载](https://hf-mirror.com/csukuangfj2/sherpa-onnx-apk/resolve/main/tts-engine-new/1.13.8/sherpa-onnx-1.13.8-arm64-v8a-eng-tts-engine-kokoro-multi-lang-v1_1.apk)，也可从 [HuggingFace 下载](https://huggingface.co/csukuangfj2/sherpa-onnx-apk/resolve/main/tts-engine-new/1.13.8/sherpa-onnx-1.13.8-arm64-v8a-eng-tts-engine-kokoro-multi-lang-v1_1.apk)；其他版本见 [官方引擎列表](https://k2-fsa.github.io/sherpa/onnx/tts/apk-engine-cn.html)。
+2. 在系统「设置 → 文字转语音输出 → 首选引擎」选 sherpa-onnx；或者只在 NekoTranslate「设置 → 朗读 → 朗读引擎」里单独选它。
+3. 在引擎设置里选一个中文音色：kokoro multi-lang v1.1 共 103 个音色，其中中文 100 个（女声 `zf_` 开头 55 个、男声 `zm_` 开头 45 个），自行试听挑选。
+4. 语速建议 1.0（默认），或 0.9 左右，中文更清晰。
+
+小米手机注意：首次安装后先打开一次引擎 App，让它解压模型。
 
 ## [0.2.0] - 2026-10-24
 

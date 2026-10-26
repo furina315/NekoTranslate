@@ -175,4 +175,26 @@
     <string name="tts_unsupported">当前朗读引擎不支持「%1$s」</string>
     <string name="tts_failed">朗读失败</string>
     <string name="tts_open_settings">去设置</string>
+    <string name="settings_section_tts">朗读</string>
+    <string name="settings_tts_engine">朗读引擎</string>
+    <string name="settings_tts_engine_default">跟随系统默认</string>
+    <string name="settings_tts_engine_default_named">跟随系统默认（%1$s）</string>
+    <string name="settings_tts_engine_missing">已选引擎未安装，暂用系统默认</string>
+    <string name="settings_tts_engine_none">未找到朗读引擎</string>
+    <string name="settings_tts_system">系统 TTS 设置</string>
+    <string name="settings_tts_system_desc">首选引擎、语速、语音数据</string>
+    <string name="settings_tts_zh_hint">中文语音安装提示</string>
+    <string name="settings_tts_zh_hint_off">已设为不再提示，点按重新开启</string>
+    <string name="settings_tts_zh_hint_reset">已重新开启中文语音提示</string>
+    <string name="zh_voice_title">当前朗读引擎没有中文语音</string>
+    <string name="zh_voice_body">推荐安装 sherpa-onnx 的 Kokoro 多语言离线语音引擎：中英混读、离线免费，有多个中文音色（arm64-v8a）。</string>
+    <string name="zh_voice_body_other_abi">推荐 sherpa-onnx 的 Kokoro 多语言离线语音引擎（中英混读、离线免费）。本机不是 arm64-v8a，请在官方列表页选择适合的版本。</string>
+    <string name="zh_voice_install_tip">安装后先打开一次引擎 App 让它准备模型，再回到这里选择引擎。</string>
+    <string name="zh_voice_mirror">国内镜像下载（hf-mirror）</string>
+    <string name="zh_voice_huggingface">HuggingFace 下载</string>
+    <string name="zh_voice_engine_list">官方引擎列表</string>
+    <string name="zh_voice_source">源码 GitHub</string>
+    <string name="zh_voice_open_system">打开系统 TTS 设置</string>
+    <string name="zh_voice_pick_engine">在应用内选择引擎</string>
+    <string name="zh_voice_never">不再提示</string>
 </resources>

@@ -38,7 +38,10 @@ import com.nekohome.translate.llama.StopReason
 import com.nekohome.translate.tts.SpeakProblem
 import com.nekohome.translate.tts.SpeakTarget
 import com.nekohome.translate.tts.Speaker
+import com.nekohome.translate.tts.TtsEngineChoice
+import com.nekohome.translate.tts.TtsEngineList
 import com.nekohome.translate.tts.TtsLocales
+import com.nekohome.translate.tts.queryTtsEngines
 import com.nekohome.translate.tts.localeDisplayName
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +52,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -111,6 +116,8 @@ data class MainUiState(
     val imageStageBackend: String? = null,
     /** Experimental GPU acceleration: device support and self-test state. */
     val gpu: GpuState = GpuState(),
+    /** The engine has no Chinese voice: show the install-an-engine bottom sheet. */
+    val chineseVoiceSheet: Boolean = false,
 ) {
     val selectedModel: LocalModel? get() = models.firstOrNull { it.file.absolutePath == selectedPath }
     val loadedModel: LocalModel? get() = loaded?.let { l -> models.firstOrNull { it.file.absolutePath == l.path } }
@@ -159,6 +166,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Which text box is being read aloud by the system TTS, if any. */
     val speaking: StateFlow<SpeakTarget?> = speaker.speaking
 
+    /** Installed TTS engines (null until the first query); re-queried on every resume. */
+    private val _ttsEngines = MutableStateFlow<TtsEngineList?>(null)
+    val ttsEngines: StateFlow<TtsEngineList?> = _ttsEngines.asStateFlow()
+
+    /** Mirrors [com.nekohome.translate.data.AppSettings.chineseVoiceHintDismissed]. */
+    @Volatile
+    private var chineseVoiceHintDismissed = false
+
     private val _state = MutableStateFlow(MainUiState())
     val state: StateFlow<MainUiState> = _state.asStateFlow()
 
@@ -195,6 +210,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(systemInfo = info) }
             val gpu = runCatching { engine.gpuState() }.getOrElse { GpuState(device = "") }
             _state.update { it.copy(gpu = gpu) }
+        }
+        viewModelScope.launch {
+            settingsRepository.settings.map { it.chineseVoiceHintDismissed }.distinctUntilChanged().collect {
+                chineseVoiceHintDismissed = it
+            }
+        }
+        refreshTtsEngines()
+        viewModelScope.launch {
+            // Bind the chosen engine; an uninstalled choice falls back to the system default, and
+            // a changed system default rebinds while following it.
+            combine(
+                settingsRepository.settings.map { it.ttsEngine }.distinctUntilChanged(),
+                _ttsEngines.filterNotNull(),
+            ) { saved, list ->
+                val pkg = TtsEngineChoice.resolve(saved, list.engines)
+                pkg to TtsEngineChoice.bindingKey(pkg, list.systemDefault)
+            }.distinctUntilChanged().collect { (pkg, key) -> speaker.setEngine(pkg, key) }
         }
         viewModelScope.launch {
             settingsRepository.settings.map { it.defaultTargetCode }.distinctUntilChanged().collect { code ->
@@ -614,7 +646,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (speaker.speaking.value != null) speaker.stop()
     }
 
+    /** Re-reads the installed TTS engines (on start and every resume: an engine may have been installed). */
+    fun refreshTtsEngines() {
+        viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) { queryTtsEngines(getApplication()) }
+            if (list != _ttsEngines.value) _ttsEngines.value = list
+        }
+    }
+
+    fun dismissChineseVoiceSheet() = _state.update { it.copy(chineseVoiceSheet = false) }
+
+    /** 「不再提示」: later Chinese voice problems fall back to the plain snackbar. */
+    fun neverShowChineseVoiceSheet() {
+        chineseVoiceHintDismissed = true
+        dismissChineseVoiceSheet()
+        viewModelScope.launch { settingsRepository.setChineseVoiceHintDismissed(true) }
+    }
+
     private fun onSpeakProblem(problem: SpeakProblem) {
+        if (problem is SpeakProblem.MissingVoice && problem.chinese && !chineseVoiceHintDismissed) {
+            _state.update { it.copy(chineseVoiceSheet = true) }
+            return
+        }
         val (text, action) = when (problem) {
             SpeakProblem.NoEngine -> str(R.string.tts_no_engine) to MessageAction.OPEN_TTS_SETTINGS
             is SpeakProblem.MissingVoice -> {

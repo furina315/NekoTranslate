@@ -39,6 +39,9 @@ import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.NotificationsOff
+import androidx.compose.material.icons.outlined.RecordVoiceOver
+import androidx.compose.material.icons.outlined.SettingsVoice
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.AlertDialog
@@ -71,11 +74,15 @@ import com.nekohome.translate.data.BuiltInProfiles
 import com.nekohome.translate.data.ThemeMode
 import com.nekohome.translate.ui.motion.LocalReduceMotion
 import com.nekohome.translate.ui.motion.Springs
+import com.nekohome.translate.tts.TtsEngineList
+import com.nekohome.translate.tts.openSystemTtsSettings
+import com.nekohome.translate.ui.tts.TtsEngineDialog
+import com.nekohome.translate.ui.tts.ttsEngineSummary
 
-private enum class SettingsDialog { THEME, TARGET }
+private enum class SettingsDialog { THEME, TARGET, TTS_ENGINE }
 
 @Composable
-fun SettingsScreen(settings: AppSettings, vm: SettingsViewModel) {
+fun SettingsScreen(settings: AppSettings, vm: SettingsViewModel, ttsEngines: TtsEngineList?) {
     val context = LocalContext.current
     var dialog by rememberSaveable { mutableStateOf<SettingsDialog?>(null) }
     val dynamicSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
@@ -146,6 +153,40 @@ fun SettingsScreen(settings: AppSettings, vm: SettingsViewModel) {
                 onCheckedChange = vm::setShowStats,
             )
 
+            SectionHeader(stringResource(R.string.settings_section_tts))
+            SettingItem(
+                icon = Icons.Outlined.RecordVoiceOver,
+                title = stringResource(R.string.settings_tts_engine),
+                summary = ttsEngineSummary(settings.ttsEngine, ttsEngines),
+                onClick = { dialog = SettingsDialog.TTS_ENGINE },
+            )
+            SettingItem(
+                icon = Icons.Outlined.SettingsVoice,
+                title = stringResource(R.string.settings_tts_system),
+                summary = stringResource(R.string.settings_tts_system_desc),
+                trailing = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) },
+                onClick = { openSystemTtsSettings(context) },
+            )
+            // Only after 「不再提示」 on the missing-Chinese-voice sheet: tap to show it again.
+            val hintResetText = stringResource(R.string.settings_tts_zh_hint_reset)
+            AnimatedVisibility(
+                visible = settings.chineseVoiceHintDismissed,
+                enter = if (reduceMotion) EnterTransition.None else
+                    expandVertically(Springs.gentle()) + fadeIn(Springs.smooth()),
+                exit = if (reduceMotion) ExitTransition.None else
+                    shrinkVertically(Springs.gentle()) + fadeOut(Springs.smooth()),
+            ) {
+                SettingItem(
+                    icon = Icons.Outlined.NotificationsOff,
+                    title = stringResource(R.string.settings_tts_zh_hint),
+                    summary = stringResource(R.string.settings_tts_zh_hint_off),
+                    onClick = {
+                        vm.setChineseVoiceHintDismissed(false)
+                        Toast.makeText(context, hintResetText, Toast.LENGTH_SHORT).show()
+                    },
+                )
+            }
+
             SectionHeader(stringResource(R.string.settings_section_about))
             SettingItem(
                 icon = Icons.Outlined.Info,
@@ -192,6 +233,12 @@ fun SettingsScreen(settings: AppSettings, vm: SettingsViewModel) {
             selected = settings.defaultTargetCode,
             label = { code -> languages.first { it.code == code }.let { "${it.nameZh} · ${it.nameEn}" } },
             onSelect = vm::setDefaultTarget,
+            onDismiss = { dialog = null },
+        )
+        SettingsDialog.TTS_ENGINE -> TtsEngineDialog(
+            list = ttsEngines,
+            selected = settings.ttsEngine,
+            onSelect = vm::setTtsEngine,
             onDismiss = { dialog = null },
         )
         null -> Unit

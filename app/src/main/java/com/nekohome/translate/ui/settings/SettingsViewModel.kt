@@ -25,4 +25,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun setDefaultTarget(code: String) { viewModelScope.launch { repository.setDefaultTarget(code) } }
     fun setKeepScreenOn(on: Boolean) { viewModelScope.launch { repository.setKeepScreenOn(on) } }
     fun setShowStats(on: Boolean) { viewModelScope.launch { repository.setShowStats(on) } }
+    fun setTtsEngine(packageName: String) { viewModelScope.launch { repository.setTtsEngine(packageName) } }
+    fun setChineseVoiceHintDismissed(dismissed: Boolean) {
+        viewModelScope.launch { repository.setChineseVoiceHintDismissed(dismissed) }
+    }
 }

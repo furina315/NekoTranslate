@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nekohome.translate.R
 import com.nekohome.translate.data.AppSettings
@@ -61,6 +62,7 @@ import com.nekohome.translate.ui.motion.bounceClick
 import com.nekohome.translate.ui.settings.SettingsScreen
 import com.nekohome.translate.ui.settings.SettingsViewModel
 import com.nekohome.translate.ui.translate.TranslateScreen
+import com.nekohome.translate.ui.tts.ChineseVoiceSheet
 
 enum class AppTab(@StringRes val label: Int, val selectedIcon: ImageVector, val icon: ImageVector) {
     TRANSLATE(R.string.tab_translate, Icons.Filled.Translate, Icons.Outlined.Translate),
@@ -96,6 +98,23 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
             }
             vm.dismissMessage()
         }
+    }
+
+    // Back from the system settings or an engine install: pick up new / removed engines and a
+    // changed system default.
+    val ttsEngines by vm.ttsEngines.collectAsStateWithLifecycle()
+    LifecycleResumeEffect(vm) {
+        vm.refreshTtsEngines()
+        onPauseOrDispose { }
+    }
+    if (state.chineseVoiceSheet) {
+        ChineseVoiceSheet(
+            engines = ttsEngines,
+            selectedEngine = settings.ttsEngine,
+            onSelectEngine = settingsVm::setTtsEngine,
+            onNeverShow = vm::neverShowChineseVoiceSheet,
+            onDismiss = vm::dismissChineseVoiceSheet,
+        )
     }
 
     // Reading aloud belongs to the 翻译 tab: leaving it stops the voice.
@@ -174,7 +193,7 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
                         onOpenModels = { tab = AppTab.MODELS },
                     )
                     AppTab.MODELS -> ModelsScreen(state = state, vm = vm)
-                    AppTab.SETTINGS -> SettingsScreen(settings = settings, vm = settingsVm)
+                    AppTab.SETTINGS -> SettingsScreen(settings = settings, vm = settingsVm, ttsEngines = ttsEngines)
                 }
             }
         }

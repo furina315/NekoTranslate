@@ -29,13 +29,17 @@ data class AppSettings(
     val defaultTargetCode: String = "en",
     val keepScreenOn: Boolean = true,
     val showStats: Boolean = true,
+    /** TTS engine package for 朗读; empty = 跟随系统默认. */
+    val ttsEngine: String = "",
+    /** 「不再提示」 on the missing-Chinese-voice sheet. */
+    val chineseVoiceHintDismissed: Boolean = false,
 )
 
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
-class SettingsRepository(context: Context) {
+class SettingsRepository internal constructor(private val store: DataStore<Preferences>) {
 
-    private val store = context.applicationContext.settingsDataStore
+    constructor(context: Context) : this(context.applicationContext.settingsDataStore)
 
     val settings: Flow<AppSettings> = store.data
         .catch { emit(emptyPreferences()) }
@@ -48,6 +52,8 @@ class SettingsRepository(context: Context) {
                 defaultTargetCode = p[DEFAULT_TARGET] ?: d.defaultTargetCode,
                 keepScreenOn = p[KEEP_SCREEN_ON] ?: d.keepScreenOn,
                 showStats = p[SHOW_STATS] ?: d.showStats,
+                ttsEngine = p[TTS_ENGINE] ?: d.ttsEngine,
+                chineseVoiceHintDismissed = p[ZH_VOICE_HINT_DISMISSED] ?: d.chineseVoiceHintDismissed,
             )
         }
 
@@ -57,6 +63,9 @@ class SettingsRepository(context: Context) {
     suspend fun setDefaultTarget(code: String) = store.edit { it[DEFAULT_TARGET] = code }
     suspend fun setKeepScreenOn(on: Boolean) = store.edit { it[KEEP_SCREEN_ON] = on }
     suspend fun setShowStats(on: Boolean) = store.edit { it[SHOW_STATS] = on }
+    suspend fun setTtsEngine(packageName: String) = store.edit { it[TTS_ENGINE] = packageName }
+    suspend fun setChineseVoiceHintDismissed(dismissed: Boolean) =
+        store.edit { it[ZH_VOICE_HINT_DISMISSED] = dismissed }
 
     private companion object {
         val THEME = stringPreferencesKey("theme_mode")
@@ -65,5 +74,7 @@ class SettingsRepository(context: Context) {
         val DEFAULT_TARGET = stringPreferencesKey("default_target")
         val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         val SHOW_STATS = booleanPreferencesKey("show_stats")
+        val TTS_ENGINE = stringPreferencesKey("tts_engine")
+        val ZH_VOICE_HINT_DISMISSED = booleanPreferencesKey("zh_voice_hint_dismissed")
     }
 }
