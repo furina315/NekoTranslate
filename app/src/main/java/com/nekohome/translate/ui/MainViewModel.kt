@@ -35,6 +35,11 @@ import com.nekohome.translate.llama.GpuMode
 import com.nekohome.translate.llama.LlamaSession
 import com.nekohome.translate.llama.RgbImage
 import com.nekohome.translate.llama.StopReason
+import com.nekohome.translate.tts.SpeakProblem
+import com.nekohome.translate.tts.SpeakTarget
+import com.nekohome.translate.tts.Speaker
+import com.nekohome.translate.tts.TtsLocales
+import com.nekohome.translate.tts.localeDisplayName
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,6 +66,9 @@ data class GenStats(
     val stopReason: StopReason,
 )
 
+/** A button shown on a snackbar message. */
+enum class MessageAction { OPEN_TTS_SETTINGS }
+
 /**
  * Everything the three tabs show, except the streaming translation text, which lives in
  * [MainViewModel.output] so per-token updates don't invalidate the whole screen.
@@ -85,6 +93,8 @@ data class MainUiState(
     val isTranslating: Boolean = false,
     val stats: GenStats? = null,
     val message: String? = null,
+    /** Optional snackbar action for [message]. */
+    val messageAction: MessageAction? = null,
     val systemInfo: String = "",
     /** Vision projectors on disk (file name -> size in bytes). */
     val mmprojFiles: Map<String, Long> = emptyMap(),
@@ -144,6 +154,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val paramsStore = ModelParamsStore(app)
     private val settingsRepository = SettingsRepository(app)
     private val engine = TranslationEngine(app)
+    private val speaker = Speaker(app, ::onSpeakProblem)
+
+    /** Which text box is being read aloud by the system TTS, if any. */
+    val speaking: StateFlow<SpeakTarget?> = speaker.speaking
 
     private val _state = MutableStateFlow(MainUiState())
     val state: StateFlow<MainUiState> = _state.asStateFlow()
@@ -276,6 +290,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun unloadModel() {
         if (_state.value.isTranslating) return
+        stopSpeaking()
         viewModelScope.launch {
             engine.unload()
             clearImageInternal()
@@ -428,6 +443,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (fromCamera) cameraFile().delete()
             return
         }
+        stopSpeaking()
         val sampling = st.paramsFor(model).sampling(st.profileFor(model))
         val budget = ImagePrep.imageTokenBudget(loaded.params.nCtx, sampling.maxTokens)
         imageJob?.cancel()
@@ -556,17 +572,64 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ translation
 
-    fun setSource(code: String) = _state.update { it.copy(sourceCode = code) }
-    fun setTarget(code: String) = _state.update { it.copy(targetCode = code) }
-    fun setInput(text: String) = _state.update { it.copy(input = text) }
+    fun setSource(code: String) {
+        stopSpeaking()
+        _state.update { it.copy(sourceCode = code) }
+    }
+    fun setTarget(code: String) {
+        stopSpeaking()
+        _state.update { it.copy(targetCode = code) }
+    }
+    fun setInput(text: String) {
+        if (speaker.speaking.value == SpeakTarget.SOURCE && text != _state.value.input) stopSpeaking()
+        _state.update { it.copy(input = text) }
+    }
     fun clearInput() {
+        stopSpeaking()
         clearImageInternal()
         setOutput("")
         _state.update { it.copy(input = "", stats = null) }
     }
-    fun dismissMessage() = _state.update { it.copy(message = null) }
+    fun dismissMessage() = _state.update { it.copy(message = null, messageAction = null) }
+
+    // ------------------------------------------------------------------ read aloud (system TTS)
+
+    /** Reads the input aloud (again to stop). An auto-detected source is guessed from its script. */
+    fun toggleSpeakInput() {
+        val st = _state.value
+        if (st.hasImage) return
+        val code = st.sourceLanguage.takeUnless { it.isAuto }?.code
+            ?: TtsLocales.guessCode(st.input)
+        speaker.toggle(SpeakTarget.SOURCE, st.input, code)
+    }
+
+    /** Reads the translation aloud (again to stop). */
+    fun toggleSpeakOutput() {
+        val st = _state.value
+        if (st.isTranslating) return
+        speaker.toggle(SpeakTarget.OUTPUT, _output.value, st.targetLanguage.code)
+    }
+
+    fun stopSpeaking() {
+        if (speaker.speaking.value != null) speaker.stop()
+    }
+
+    private fun onSpeakProblem(problem: SpeakProblem) {
+        val (text, action) = when (problem) {
+            SpeakProblem.NoEngine -> str(R.string.tts_no_engine) to MessageAction.OPEN_TTS_SETTINGS
+            is SpeakProblem.MissingVoice -> {
+                val name = _state.value.activeProfile.findLanguage(problem.code)?.takeUnless { it.isAuto }?.nameZh
+                    ?: localeDisplayName(problem.code)
+                str(if (problem.missingData) R.string.tts_missing_data else R.string.tts_unsupported, name) to
+                    MessageAction.OPEN_TTS_SETTINGS
+            }
+            SpeakProblem.Failed -> str(R.string.tts_failed) to null
+        }
+        _state.update { it.copy(message = text, messageAction = action) }
+    }
 
     fun swapLanguages() {
+        stopSpeaking()
         val st = _state.value
         val out = _output.value
         val (src, tgt) = LanguageRules.swap(st.activeProfile, st.sourceCode, st.targetCode)
@@ -581,6 +644,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val st = _state.value
         if (!st.canTranslate) return
         val model = st.loadedModel ?: return
+        stopSpeaking()
         val profile = st.profileFor(model)
         val sampling = st.paramsFor(model).sampling(profile)
         val image = pendingImage?.takeIf { st.hasImage }
@@ -597,7 +661,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         translateJob?.cancel()
         translateJob = viewModelScope.launch {
             setOutput("")
-            _state.update { it.copy(isTranslating = true, stats = null, message = null, imageStage = null) }
+            _state.update { it.copy(isTranslating = true, stats = null, message = null, messageAction = null, imageStage = null) }
             try {
                 events.throttleLatest(OUTPUT_FRAME_MS).collect { ev ->
                     when (ev) {
@@ -634,6 +698,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stop() = engine.cancel()
 
     override fun onCleared() {
+        speaker.shutdown()
         engine.cancel()
         super.onCleared()
     }

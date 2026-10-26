@@ -5,6 +5,13 @@
          No CAMERA permission either: photos are taken by the system camera app
          (ACTION_IMAGE_CAPTURE into our FileProvider), images are picked with the Photo Picker. -->
 
+    <!-- Android 11+ package visibility: lets TextToSpeech find and bind the system TTS engine. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

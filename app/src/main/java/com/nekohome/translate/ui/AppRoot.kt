@@ -30,8 +30,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -46,11 +48,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nekohome.translate.R
 import com.nekohome.translate.data.AppSettings
+import com.nekohome.translate.tts.openTtsSettings
 import com.nekohome.translate.ui.models.ModelsScreen
 import com.nekohome.translate.ui.motion.LocalReduceMotion
 import com.nekohome.translate.ui.motion.bounceClick
@@ -76,12 +80,27 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
     val tabStates = rememberSaveableStateHolder()
     val snackbar = remember { SnackbarHostState() }
 
-    LaunchedEffect(state.message) {
+    val context = LocalContext.current
+    val ttsSettingsLabel = stringResource(R.string.tts_open_settings)
+    LaunchedEffect(state.message, state.messageAction) {
         val msg = state.message
         if (msg != null) {
-            snackbar.showSnackbar(msg)
+            val action = state.messageAction
+            val result = snackbar.showSnackbar(
+                message = msg,
+                actionLabel = if (action == MessageAction.OPEN_TTS_SETTINGS) ttsSettingsLabel else null,
+                duration = if (action != null) SnackbarDuration.Long else SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed && action == MessageAction.OPEN_TTS_SETTINGS) {
+                openTtsSettings(context)
+            }
             vm.dismissMessage()
         }
+    }
+
+    // Reading aloud belongs to the 翻译 tab: leaving it stops the voice.
+    LaunchedEffect(tab) {
+        if (tab != AppTab.TRANSLATE) vm.stopSpeaking()
     }
 
     BackHandler(enabled = tab != AppTab.TRANSLATE) { tab = AppTab.TRANSLATE }

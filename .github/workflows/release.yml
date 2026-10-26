@@ -9,9 +9,13 @@ name: Release APKs
 #                                                           GitHub's auto-generated commit/PR list.
 #   versionName = tag without "v"; versionCode = X*10000 + Y*100 + Z from vX.Y.Z (nothing to bump).
 #   git tag v0.2.0-beta1 && git push origin v0.2.0-beta1  -> same, marked pre-release (tag has '-')
-#   Actions -> "Release APKs" -> Run workflow (branch main) -> pre-release "nightly", deleted and
-#     re-created on every manual run so it always points at the commit just built. Choosing a v*
-#     tag in "Use workflow from" instead rebuilds that tag and replaces its release files.
+#   Actions -> "Release APKs" -> Run workflow (branch main):
+#     * HEAD carries a vX.Y.Z-nightly.N tag (pushing such a tag does NOT build by itself) ->
+#       pre-release "vX.Y.Z-nightly.N", versionName = tag without "v",
+#       versionCode = latest stable tag's code + N, notes = the annotated tag's message + template.
+#     * otherwise -> pre-release "nightly", deleted and re-created on every manual run so it always
+#       points at the commit just built (versionCode = latest stable tag + 1).
+#     Choosing a v* tag in "Use workflow from" instead rebuilds that tag and replaces its release files.
 #
 # Note: GitHub skips tag pushes too when the tagged commit's message contains a skip-ci marker,
 # so do not tag such a commit (or use the manual run instead).
@@ -21,7 +25,8 @@ name: Release APKs
 # a manual nightly falls back to the runner's throwaway debug key with a warning.
 on:
   push:
-    tags: [ 'v*' ]
+    # Nightly tags (v0.3.0-nightly.1 ...) are built by the manual run instead.
+    tags: [ 'v*', '!v*-nightly.*' ]
   workflow_dispatch:
 
 concurrency:
@@ -56,24 +61,40 @@ jobs:
             echo "$1" | sed -nE 's/^v?([0-9]+)\.([0-9]+)\.([0-9]+).*/\1 \2 \3/p' \
               | awk '{ print $1*10000 + $2*100 + $3 }'
           }
+          # Latest stable tag (vX.Y.Z, no suffix).
+          stable=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | head -1 || true)
+          # vX.Y.Z-nightly.N -> latest stable code + N (so 0.3.0 itself still installs over it).
+          nightly_code() {
+            n=$(echo "$1" | sed -nE 's/^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.([0-9]+)$/\1/p')
+            [ -n "$n" ] || return 0
+            echo $(( $(code_of "${stable:-v0.0.0}") + n ))
+          }
+          tag_message() {
+            if [ "$(git cat-file -t "refs/tags/$1")" = "tag" ]; then
+              git tag -l --format='%(contents)' "$1" | sed '/-----BEGIN PGP SIGNATURE-----/,$d' > tag_message.md
+            fi
+          }
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             tag="${GITHUB_REF_NAME}"
+          else
+            # Manual run on a branch: use a nightly tag on HEAD if there is one.
+            tag=$(git tag --points-at HEAD -l 'v*-nightly.*' --sort=-v:refname | head -1 || true)
+          fi
+          if [ -n "$tag" ]; then
             version="${tag#v}"
             case "$tag" in *-*) prerelease=true ;; *) prerelease=false ;; esac
-            code=$(code_of "$tag")
+            code=$(nightly_code "$tag")
+            [ -n "$code" ] || code=$(code_of "$tag")
             [ -n "$code" ] || { echo "::error::tag $tag is not vX.Y.Z[-suffix]"; exit 1; }
             # Annotated tag message -> top of the release notes (lightweight tags have none).
-            if [ "$(git cat-file -t "refs/tags/$tag")" = "tag" ]; then
-              git tag -l --format='%(contents)' "$tag" | sed '/-----BEGIN PGP SIGNATURE-----/,$d' > tag_message.md
-            fi
+            tag_message "$tag"
           else
             tag="nightly"
             base=$(sed -nE 's/.*versionName = .*\?: "([0-9][^"]*)".*/\1/p' app/build.gradle.kts | head -1)
             version="${base:-0.0.0}-nightly-${short}"
             prerelease=true
-            # Latest v* tag + 1, so a nightly installs over the last release.
-            last=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
-            code=$(( $(code_of "${last:-v$base}") + 1 ))
+            # Latest stable tag + 1, so a nightly installs over the last release.
+            code=$(( $(code_of "${stable:-v$base}") + 1 ))
           fi
           touch tag_message.md
           {

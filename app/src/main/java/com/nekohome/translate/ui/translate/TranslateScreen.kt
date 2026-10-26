@@ -119,6 +119,9 @@ import com.nekohome.translate.ui.motion.LocalReduceMotion
 import com.nekohome.translate.ui.motion.Springs
 import com.nekohome.translate.ui.motion.bounceClick
 import com.nekohome.translate.ui.motion.motion
+import com.nekohome.translate.tts.SpeakTarget
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material.icons.outlined.StopCircle
 import java.util.Locale
 
 @Composable
@@ -148,6 +151,7 @@ fun TranslateScreen(
         val output = vm.output.collectAsStateWithLifecycle()
         val outputProvider = remember(output) { { output.value } }
         val imagePicker = rememberImagePicker(vm)
+        val speaking by vm.speaking.collectAsStateWithLifecycle()
         if (state.loaded == null) {
             NoModelState(
                 state = state,
@@ -194,6 +198,8 @@ fun TranslateScreen(
                     onCamera = imagePicker.camera,
                     onGallery = imagePicker.gallery,
                     onClearImage = vm::clearImage,
+                    speaking = speaking == SpeakTarget.SOURCE,
+                    onSpeak = vm::toggleSpeakInput,
                 )
                 val reduceMotion = LocalReduceMotion.current
                 AnimatedVisibility(
@@ -217,6 +223,8 @@ fun TranslateScreen(
                         output = outputProvider,
                         stats = state.stats,
                         showStats = showStats,
+                        speaking = speaking == SpeakTarget.OUTPUT,
+                        onSpeak = vm::toggleSpeakOutput,
                     )
                 }
                 Spacer(Modifier.height(16.dp))
@@ -450,6 +458,8 @@ private fun InputCard(
     onCamera: () -> Unit,
     onGallery: () -> Unit,
     onClearImage: () -> Unit,
+    speaking: Boolean,
+    onSpeak: () -> Unit,
 ) {
     val context = LocalContext.current
     val imageMode = imageThumb != null || isPreparingImage
@@ -518,6 +528,12 @@ private fun InputCard(
                 IconButton(onClick = onClear, enabled = !isTranslating) {
                     Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.translate_clear))
                 }
+                SpeakButton(
+                    speaking = speaking,
+                    enabled = input.isNotBlank(),
+                    label = stringResource(R.string.tts_speak_source),
+                    onClick = onSpeak,
+                )
                 Text(
                     input.length.toString(),
                     style = MaterialTheme.typography.labelSmall,
@@ -670,6 +686,8 @@ private fun OutputCard(
     output: () -> String,
     stats: com.nekohome.translate.ui.GenStats?,
     showStats: Boolean,
+    speaking: Boolean,
+    onSpeak: () -> Unit,
 ) {
     val context = LocalContext.current
     val copiedText = stringResource(R.string.translate_copied)
@@ -709,6 +727,12 @@ private fun OutputCard(
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f),
                     modifier = Modifier.weight(1f),
                 )
+                SpeakButton(
+                    speaking = speaking,
+                    enabled = hasOutput && !isTranslating,
+                    label = stringResource(R.string.tts_speak_output),
+                    onClick = onSpeak,
+                )
                 IconButton(
                     onClick = {
                         copyText(context, output())
@@ -721,6 +745,47 @@ private fun OutputCard(
                 ) {
                     Icon(Icons.Outlined.ContentCopy, contentDescription = stringResource(R.string.translate_copy))
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Read-aloud toggle: a speaker icon that springs into a stop icon while the text is being read.
+ */
+@Composable
+private fun SpeakButton(speaking: Boolean, enabled: Boolean, label: String, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    val reduceMotion = LocalReduceMotion.current
+    IconButton(
+        onClick = onClick,
+        enabled = enabled || speaking,
+        interactionSource = src,
+        modifier = Modifier.bounceClick(src, pressedScale = 0.85f),
+    ) {
+        AnimatedContent(
+            targetState = speaking,
+            transitionSpec = {
+                if (reduceMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    (scaleIn(Springs.bouncy(), initialScale = 0.6f) + fadeIn(Springs.smooth(Spring.StiffnessMedium)))
+                        .togetherWith(
+                            scaleOut(Springs.smooth(Spring.StiffnessMedium), targetScale = 0.6f) +
+                                fadeOut(Springs.smooth(Spring.StiffnessMedium)),
+                        )
+                }
+            },
+            label = "speak",
+        ) { active ->
+            if (active) {
+                Icon(
+                    Icons.Outlined.StopCircle,
+                    contentDescription = stringResource(R.string.tts_stop),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Icon(Icons.AutoMirrored.Outlined.VolumeUp, contentDescription = label)
             }
         }
     }
