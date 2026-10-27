@@ -33,6 +33,8 @@ data class AppSettings(
     val ttsEngine: String = "",
     /** 「不再提示」 on the missing-Chinese-voice sheet. */
     val chineseVoiceHintDismissed: Boolean = false,
+    /** Save finished text translations to 翻译历史. */
+    val historyEnabled: Boolean = true,
 )
 
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
@@ -54,6 +56,7 @@ class SettingsRepository internal constructor(private val store: DataStore<Prefe
                 showStats = p[SHOW_STATS] ?: d.showStats,
                 ttsEngine = p[TTS_ENGINE] ?: d.ttsEngine,
                 chineseVoiceHintDismissed = p[ZH_VOICE_HINT_DISMISSED] ?: d.chineseVoiceHintDismissed,
+                historyEnabled = p[HISTORY_ENABLED] ?: d.historyEnabled,
             )
         }
 
@@ -67,6 +70,8 @@ class SettingsRepository internal constructor(private val store: DataStore<Prefe
     suspend fun setChineseVoiceHintDismissed(dismissed: Boolean) =
         store.edit { it[ZH_VOICE_HINT_DISMISSED] = dismissed }
 
+    suspend fun setHistoryEnabled(on: Boolean) = store.edit { it[HISTORY_ENABLED] = on }
+
     private companion object {
         val THEME = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
@@ -75,6 +80,7 @@ class SettingsRepository internal constructor(private val store: DataStore<Prefe
         val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         val SHOW_STATS = booleanPreferencesKey("show_stats")
         val TTS_ENGINE = stringPreferencesKey("tts_engine")
+        val HISTORY_ENABLED = booleanPreferencesKey("history_enabled")
         val ZH_VOICE_HINT_DISMISSED = booleanPreferencesKey("zh_voice_hint_dismissed")
     }
 }

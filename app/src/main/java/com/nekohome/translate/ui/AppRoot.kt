@@ -2,6 +2,7 @@ package com.nekohome.translate.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
@@ -15,6 +16,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,7 +31,9 @@ import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -53,6 +57,10 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nekohome.translate.ui.history.HistoryScreen
+import com.nekohome.translate.ui.history.HistoryViewModel
+import com.nekohome.translate.ui.motion.Springs
 import com.nekohome.translate.R
 import com.nekohome.translate.data.AppSettings
 import com.nekohome.translate.tts.openTtsSettings
@@ -80,6 +88,8 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
     val state by vm.state.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableStateOf(AppTab.TRANSLATE) }
     val tabStates = rememberSaveableStateHolder()
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    val historyVm: HistoryViewModel = viewModel()
     val snackbar = remember { SnackbarHostState() }
 
     val context = LocalContext.current
@@ -123,10 +133,13 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
     }
 
     BackHandler(enabled = tab != AppTab.TRANSLATE) { tab = AppTab.TRANSLATE }
+    // Registered after the tab handler so it wins while the history page is open.
+    BackHandler(enabled = showHistory) { showHistory = false }
 
     KeepScreenOn(settings.keepScreenOn && (state.isTranslating || state.isLoading))
 
     val reduceMotion = LocalReduceMotion.current
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbar) },
@@ -191,12 +204,37 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
                         vm = vm,
                         showStats = settings.showStats,
                         onOpenModels = { tab = AppTab.MODELS },
+                        onOpenHistory = { showHistory = true },
                     )
                     AppTab.MODELS -> ModelsScreen(state = state, vm = vm)
                     AppTab.SETTINGS -> SettingsScreen(settings = settings, vm = settingsVm, ttsEngines = ttsEngines)
                 }
             }
         }
+    }
+
+    // 翻译历史 slides over the whole shell (bottom bar included).
+    AnimatedVisibility(
+        visible = showHistory,
+        enter = if (reduceMotion) EnterTransition.None else
+            slideInHorizontally(Springs.transition()) { w -> w / 6 } + fadeIn(Springs.smooth(Spring.StiffnessMedium)),
+        exit = if (reduceMotion) ExitTransition.None else
+            slideOutHorizontally(Springs.transition()) { w -> w / 6 } + fadeOut(Springs.smooth(Spring.StiffnessHigh)),
+    ) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            HistoryScreen(
+                vm = historyVm,
+                historyEnabled = settings.historyEnabled,
+                onBack = { showHistory = false; historyVm.setQuery("") },
+                onPick = { entry ->
+                    showHistory = false
+                    historyVm.setQuery("")
+                    tab = AppTab.TRANSLATE
+                    vm.restoreFromHistory(entry)
+                },
+            )
+        }
+    }
     }
 }
 

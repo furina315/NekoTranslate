@@ -83,4 +83,12 @@ class TtsSettingsTest {
         // The choice itself is kept: reinstalling the engine brings it back.
         assertEquals(saved, TtsEngineChoice.resolve(saved, stillThere + TtsEngineInfo(saved, "sherpa-onnx")))
     }
+
+    @Test
+    fun historyIsOnByDefaultAndCanBeTurnedOff() = runBlocking {
+        val repo = repository()
+        assertTrue(repo.settings.first().historyEnabled)
+        repo.setHistoryEnabled(false)
+        assertFalse(repo.settings.first().historyEnabled)
+    }
 }

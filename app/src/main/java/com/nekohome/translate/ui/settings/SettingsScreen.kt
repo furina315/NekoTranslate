@@ -36,6 +36,7 @@ import androidx.compose.material.icons.outlined.ColorLens
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Gavel
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Memory
@@ -151,6 +152,13 @@ fun SettingsScreen(settings: AppSettings, vm: SettingsViewModel, ttsEngines: Tts
                 summary = stringResource(R.string.settings_show_stats_desc),
                 checked = settings.showStats,
                 onCheckedChange = vm::setShowStats,
+            )
+            SwitchItem(
+                icon = Icons.Outlined.History,
+                title = stringResource(R.string.settings_history),
+                summary = stringResource(R.string.settings_history_desc),
+                checked = settings.historyEnabled,
+                onCheckedChange = vm::setHistoryEnabled,
             )
 
             SectionHeader(stringResource(R.string.settings_section_tts))

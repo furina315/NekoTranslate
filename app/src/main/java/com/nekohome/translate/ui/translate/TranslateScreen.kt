@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.PhotoLibrary
@@ -130,12 +131,16 @@ fun TranslateScreen(
     vm: MainViewModel,
     showStats: Boolean,
     onOpenModels: () -> Unit,
+    onOpenHistory: () -> Unit,
 ) {
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.app_name)) },
                 actions = {
+                    IconButton(onClick = onOpenHistory) {
+                        Icon(Icons.Outlined.History, contentDescription = stringResource(R.string.translate_history))
+                    }
                     ModelChip(
                         isLoading = state.isLoading,
                         loadedName = state.loadedModel?.file?.nameWithoutExtension,

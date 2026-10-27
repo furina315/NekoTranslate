@@ -11,6 +11,9 @@ import androidx.lifecycle.viewModelScope
 import com.nekohome.translate.R
 import com.nekohome.translate.data.BuiltInProfiles
 import com.nekohome.translate.data.GpuGuard
+import com.nekohome.translate.data.HistoryEntry
+import com.nekohome.translate.data.HistoryRules
+import com.nekohome.translate.data.HistoryStore
 import com.nekohome.translate.data.GpuState
 import com.nekohome.translate.data.Language
 import com.nekohome.translate.data.LanguageRules
@@ -162,6 +165,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val settingsRepository = SettingsRepository(app)
     private val engine = TranslationEngine(app)
     private val speaker = Speaker(app, ::onSpeakProblem)
+    private val history = HistoryStore.get(app)
+
+    /** Mirrors [com.nekohome.translate.data.AppSettings.historyEnabled]. */
+    @Volatile
+    private var historyEnabled = true
 
     /** Which text box is being read aloud by the system TTS, if any. */
     val speaking: StateFlow<SpeakTarget?> = speaker.speaking
@@ -215,6 +223,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             settingsRepository.settings.map { it.chineseVoiceHintDismissed }.distinctUntilChanged().collect {
                 chineseVoiceHintDismissed = it
             }
+        }
+        viewModelScope.launch {
+            settingsRepository.settings.map { it.historyEnabled }.distinctUntilChanged().collect { historyEnabled = it }
         }
         refreshTtsEngines()
         viewModelScope.launch {
@@ -728,6 +739,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         is GenerationEvent.Done -> {
                             setOutput(ev.text)
+                            if (image == null && historyEnabled && HistoryRules.isSavable(ev.stats.stopReason, st.input, ev.text)) {
+                                saveHistory(st, model.file.nameWithoutExtension, ev.text)
+                            }
                             _state.update {
                                 it.copy(
                                     isTranslating = false,
@@ -749,6 +763,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stop() = engine.cancel()
+
+    // ------------------------------------------------------------------ history
+
+    private fun saveHistory(st: MainUiState, modelName: String, translation: String) {
+        val entry = HistoryEntry(
+            id = 0,
+            sourceText = st.input.trim(),
+            targetText = translation.trim(),
+            sourceCode = st.sourceLanguage.code,
+            targetCode = st.targetLanguage.code,
+            modelName = modelName,
+            createdAt = System.currentTimeMillis(),
+        )
+        viewModelScope.launch { runCatching { history.add(entry) } }
+    }
+
+    /** Puts a history entry back on the translate page: text, translation and language pair. */
+    fun restoreFromHistory(entry: HistoryEntry) {
+        val st = _state.value
+        if (st.isTranslating || st.isPreparingImage) return
+        stopSpeaking()
+        clearImageInternal()
+        setOutput(entry.targetText)
+        _state.update {
+            it.copy(
+                input = entry.sourceText,
+                sourceCode = entry.sourceCode,
+                targetCode = entry.targetCode,
+                stats = null,
+                message = if (it.loaded == null) str(R.string.msg_history_restored_no_model) else null,
+                messageAction = null,
+            )
+        }
+    }
 
     override fun onCleared() {
         speaker.shutdown()
