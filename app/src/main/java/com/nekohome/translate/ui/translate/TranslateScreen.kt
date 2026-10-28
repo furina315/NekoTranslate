@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -60,6 +61,8 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Fullscreen
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Memory
@@ -696,6 +699,8 @@ private fun OutputCard(
 ) {
     val context = LocalContext.current
     val copiedText = stringResource(R.string.translate_copied)
+    var fullscreen by rememberSaveable { mutableStateOf(false) }
+    val shareTitle = stringResource(R.string.translate_share)
     // While streaming, the card grows line by line; animating each growth restarts a size
     // animation many times a second and keeps clipping the newest line, so size changes snap
     // during a translation and animate only for one-off changes afterwards.
@@ -738,6 +743,21 @@ private fun OutputCard(
                     label = stringResource(R.string.tts_speak_output),
                     onClick = onSpeak,
                 )
+                IconButton(onClick = { fullscreen = true }, enabled = hasOutput && !isTranslating) {
+                    Icon(Icons.Outlined.Fullscreen, contentDescription = stringResource(R.string.translate_fullscreen))
+                }
+                IconButton(
+                    onClick = {
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(android.content.Intent.EXTRA_TEXT, output())
+                        }
+                        runCatching { context.startActivity(android.content.Intent.createChooser(send, shareTitle)) }
+                    },
+                    enabled = hasOutput && !isTranslating,
+                ) {
+                    Icon(Icons.Outlined.Share, contentDescription = stringResource(R.string.translate_share))
+                }
                 IconButton(
                     onClick = {
                         copyText(context, output())
@@ -749,6 +769,29 @@ private fun OutputCard(
                     enabled = hasOutput && !isTranslating,
                 ) {
                     Icon(Icons.Outlined.ContentCopy, contentDescription = stringResource(R.string.translate_copy))
+                }
+            }
+        }
+    }
+    if (fullscreen) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { fullscreen = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            androidx.compose.material3.Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            targetName,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { fullscreen = false }) { Text(stringResource(R.string.translate_fullscreen_close)) }
+                    }
+                    SelectionContainer(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+                        Text(output(), style = MaterialTheme.typography.headlineMedium)
+                    }
                 }
             }
         }

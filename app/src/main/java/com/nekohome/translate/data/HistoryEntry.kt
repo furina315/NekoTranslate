@@ -16,6 +16,7 @@ data class HistoryEntry(
     val modelName: String,
     /** Epoch milliseconds. */
     val createdAt: Long,
+    val starred: Boolean = false,
 )
 
 /** Pure rules behind 翻译历史, kept free of Android so they can be unit-tested on the JVM. */
@@ -25,6 +26,13 @@ object HistoryRules {
 
     /** Max rows one search returns (the list is not paged). */
     const val SEARCH_LIMIT = 500
+
+    /** Source text stored for an image translation (only the translation text is kept). */
+    const val IMAGE_SOURCE_PLACEHOLDER = "[图片]"
+
+    /** Plain text for sharing: the translation, optionally preceded by the source. */
+    fun shareText(source: String, target: String, includeSource: Boolean): String =
+        if (includeSource && source.isNotBlank()) "${source.trim()}\n\n${target.trim()}" else target.trim()
 
     /** Only a translation that ran to its natural end (or was cut by a limit) is worth keeping. */
     fun isSavable(stop: StopReason, sourceText: String, targetText: String): Boolean =

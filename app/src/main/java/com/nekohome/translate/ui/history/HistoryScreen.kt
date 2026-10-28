@@ -24,11 +24,14 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -94,6 +97,7 @@ fun HistoryScreen(
 ) {
     val entries by vm.entries.collectAsStateWithLifecycle()
     val query by vm.query.collectAsStateWithLifecycle()
+    val starredOnly by vm.starredOnly.collectAsStateWithLifecycle()
     var searching by rememberSaveable { mutableStateOf(false) }
     var confirmClear by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
@@ -168,10 +172,24 @@ fun HistoryScreen(
             )
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = !starredOnly,
+                onClick = { vm.setStarredOnly(false) },
+                label = { Text(stringResource(R.string.history_filter_all)) },
+            )
+            FilterChip(
+                selected = starredOnly,
+                onClick = { vm.setStarredOnly(true) },
+                label = { Text(stringResource(R.string.history_filter_starred)) },
+                leadingIcon = { Icon(Icons.Filled.Star, contentDescription = null, modifier = Modifier.size(18.dp)) },
+            )
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 entries == null -> Unit
-                rows.isEmpty() -> EmptyState(searching = query.isNotBlank(), historyEnabled = historyEnabled)
+                rows.isEmpty() -> EmptyState(searching = query.isNotBlank(), starredOnly = starredOnly, historyEnabled = historyEnabled)
                 else -> LazyColumn(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -191,6 +209,7 @@ fun HistoryScreen(
                                 entry = row.entry,
                                 zone = zone,
                                 onClick = { onPick(row.entry) },
+                                onStar = { vm.toggleStar(row.entry) },
                                 onDelete = {
                                     vm.delete(row.entry)
                                     scope.launch {
@@ -209,6 +228,7 @@ fun HistoryScreen(
                     }
                 }
             }
+        }
         }
     }
 
@@ -230,27 +250,27 @@ fun HistoryScreen(
 }
 
 @Composable
-private fun EmptyState(searching: Boolean, historyEnabled: Boolean) {
+private fun EmptyState(searching: Boolean, starredOnly: Boolean, historyEnabled: Boolean) {
     Column(
         Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(
-            if (searching) Icons.Outlined.SearchOff else Icons.Outlined.History,
+            if (searching) Icons.Outlined.SearchOff else if (starredOnly) Icons.Outlined.StarBorder else Icons.Outlined.History,
             contentDescription = null,
             modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary,
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            stringResource(if (searching) R.string.history_no_match else R.string.history_empty_title),
+            stringResource(if (searching) R.string.history_no_match else if (starredOnly) R.string.history_starred_empty_title else R.string.history_empty_title),
             style = MaterialTheme.typography.titleMedium,
         )
         if (!searching) {
             Spacer(Modifier.height(8.dp))
             Text(
-                stringResource(if (historyEnabled) R.string.history_empty_body else R.string.history_empty_disabled),
+                stringResource(if (starredOnly) R.string.history_starred_empty_body else if (historyEnabled) R.string.history_empty_body else R.string.history_empty_disabled),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -281,6 +301,7 @@ private fun HistoryItem(
     entry: HistoryEntry,
     zone: ZoneId,
     onClick: () -> Unit,
+    onStar: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -333,6 +354,14 @@ private fun HistoryItem(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    IconButton(onClick = onStar, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            if (entry.starred) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                            contentDescription = stringResource(if (entry.starred) R.string.history_unstar else R.string.history_star),
+                            tint = if (entry.starred) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
                 Text(
                     entry.sourceText.trim(),

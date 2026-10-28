@@ -739,8 +739,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         is GenerationEvent.Done -> {
                             setOutput(ev.text)
-                            if (image == null && historyEnabled && HistoryRules.isSavable(ev.stats.stopReason, st.input, ev.text)) {
-                                saveHistory(st, model.file.nameWithoutExtension, ev.text)
+                            val histSource = if (image != null) HistoryRules.IMAGE_SOURCE_PLACEHOLDER else st.input
+                            if (historyEnabled && HistoryRules.isSavable(ev.stats.stopReason, histSource, ev.text)) {
+                                saveHistory(st, histSource, model.file.nameWithoutExtension, ev.text)
                             }
                             _state.update {
                                 it.copy(
@@ -766,10 +767,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ history
 
-    private fun saveHistory(st: MainUiState, modelName: String, translation: String) {
+    private fun saveHistory(st: MainUiState, source: String, modelName: String, translation: String) {
         val entry = HistoryEntry(
             id = 0,
-            sourceText = st.input.trim(),
+            sourceText = source.trim(),
             targetText = translation.trim(),
             sourceCode = st.sourceLanguage.code,
             targetCode = st.targetLanguage.code,
@@ -788,7 +789,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         setOutput(entry.targetText)
         _state.update {
             it.copy(
-                input = entry.sourceText,
+                input = if (entry.sourceText == HistoryRules.IMAGE_SOURCE_PLACEHOLDER) "" else entry.sourceText,
                 sourceCode = entry.sourceCode,
                 targetCode = entry.targetCode,
                 stats = null,

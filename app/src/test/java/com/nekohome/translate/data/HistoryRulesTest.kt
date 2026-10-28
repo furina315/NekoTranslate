@@ -64,4 +64,11 @@ class HistoryRulesTest {
         assertEquals(listOf(1L), groups[2].second.map { it.id })
         assertTrue(HistoryRules.groupByDay(emptyList(), zone).isEmpty())
     }
+
+    @org.junit.Test
+    fun shareTextIncludesSourceOnlyWhenAsked() {
+        org.junit.Assert.assertEquals("你好", HistoryRules.shareText(" hello ", " 你好 ", false))
+        org.junit.Assert.assertEquals("hello\n\n你好", HistoryRules.shareText(" hello ", " 你好 ", true))
+        org.junit.Assert.assertEquals("你好", HistoryRules.shareText("  ", "你好", true))
+    }
 }

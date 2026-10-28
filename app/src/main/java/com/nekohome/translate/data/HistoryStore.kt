@@ -29,13 +29,16 @@ class HistoryStore private constructor(context: Context) :
                 source_code TEXT NOT NULL,
                 target_code TEXT NOT NULL,
                 model TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                starred INTEGER NOT NULL DEFAULT 0
             )""",
         )
         db.execSQL("CREATE INDEX idx_history_created ON history(created_at DESC)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) db.execSQL("ALTER TABLE history ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+    }
 
     /** Saves [entry] (its id is ignored); a repeat of the newest entry only refreshes its time. */
     suspend fun add(entry: HistoryEntry) = withContext(Dispatchers.IO) {
@@ -49,7 +52,7 @@ class HistoryStore private constructor(context: Context) :
                 db.insert("history", null, values(entry, withId = false))
                 // Keep only the newest MAX_ENTRIES rows.
                 db.execSQL(
-                    "DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY created_at DESC, id DESC LIMIT ${HistoryRules.MAX_ENTRIES})",
+                    "DELETE FROM history WHERE starred = 0 AND id NOT IN (SELECT id FROM history WHERE starred = 0 ORDER BY created_at DESC, id DESC LIMIT ${HistoryRules.MAX_ENTRIES})",
                 )
             }
             db.setTransactionSuccessful()
@@ -60,21 +63,34 @@ class HistoryStore private constructor(context: Context) :
     }
 
     /** Newest first; a blank [query] lists everything, otherwise matches source or translation text. */
-    suspend fun search(query: String, limit: Int = HistoryRules.SEARCH_LIMIT): List<HistoryEntry> =
+    suspend fun search(
+        query: String,
+        starredOnly: Boolean = false,
+        limit: Int = HistoryRules.SEARCH_LIMIT,
+    ): List<HistoryEntry> =
         withContext(Dispatchers.IO) {
             val q = query.trim()
+            val star = if (starredOnly) "starred = 1" else null
             if (q.isEmpty()) {
-                queryRows(readableDatabase, null, null, limit)
+                queryRows(readableDatabase, star, null, limit)
             } else {
                 val p = HistoryRules.likePattern(q)
+                val match = "(source_text LIKE ? ESCAPE '\\' OR target_text LIKE ? ESCAPE '\\')"
                 queryRows(
                     readableDatabase,
-                    "source_text LIKE ? ESCAPE '\\' OR target_text LIKE ? ESCAPE '\\'",
+                    if (star != null) "$star AND $match" else match,
                     arrayOf(p, p),
                     limit,
                 )
             }
         }
+
+    suspend fun setStarred(id: Long, starred: Boolean) = withContext(Dispatchers.IO) {
+        writableDatabase.update(
+            "history", ContentValues().apply { put("starred", if (starred) 1 else 0) }, "id = ?", arrayOf(id.toString()),
+        )
+        _changes.value++
+    }
 
     suspend fun delete(id: Long) = withContext(Dispatchers.IO) {
         writableDatabase.delete("history", "id = ?", arrayOf(id.toString()))
@@ -87,8 +103,9 @@ class HistoryStore private constructor(context: Context) :
         _changes.value++
     }
 
+    /** Removes everything except starred entries. */
     suspend fun clear() = withContext(Dispatchers.IO) {
-        writableDatabase.delete("history", null, null)
+        writableDatabase.delete("history", "starred = 0", null)
         _changes.value++
     }
 
@@ -100,23 +117,24 @@ class HistoryStore private constructor(context: Context) :
         put("target_code", e.targetCode)
         put("model", e.modelName)
         put("created_at", e.createdAt)
+        put("starred", if (e.starred) 1 else 0)
     }
 
     private fun queryRows(db: SQLiteDatabase, where: String?, args: Array<String>?, limit: Int): List<HistoryEntry> =
         db.query(
             "history",
-            arrayOf("id", "source_text", "target_text", "source_code", "target_code", "model", "created_at"),
+            arrayOf("id", "source_text", "target_text", "source_code", "target_code", "model", "created_at", "starred"),
             where, args, null, null, "created_at DESC, id DESC", limit.toString(),
         ).use { c ->
             buildList {
                 while (c.moveToNext()) {
-                    add(HistoryEntry(c.getLong(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getLong(6)))
+                    add(HistoryEntry(c.getLong(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getLong(6), c.getInt(7) != 0))
                 }
             }
         }
 
     companion object {
-        private const val VERSION = 1
+        private const val VERSION = 2
 
         @Volatile
         private var instance: HistoryStore? = null
