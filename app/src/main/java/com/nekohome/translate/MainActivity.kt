@@ -59,11 +59,20 @@ class MainActivity : ComponentActivity() {
         handleIncoming(intent)
     }
 
-    /** 选中文字菜单（PROCESS_TEXT）和系统分享（SEND 文本 / 图片）。 */
+    /**
+     * Incoming content. 选中文字 / 分享文本 now open the quick-translate card
+     * ([com.nekohome.translate.ui.quick.QuickTranslateActivity]); its 「在 App 中打开」 arrives here
+     * as [ACTION_TRANSLATE_TEXT]. Shared images still come straight here (image translation).
+     */
     private fun handleIncoming(intent: Intent?) {
         intent ?: return
         val vm = viewModels<MainViewModel>().value
         when (intent.action) {
+            ACTION_TRANSLATE_TEXT -> vm.receiveText(
+                intent.getStringExtra(Intent.EXTRA_TEXT),
+                translated = intent.getStringExtra(EXTRA_TRANSLATION),
+                targetCode = intent.getStringExtra(EXTRA_TARGET),
+            )
             Intent.ACTION_PROCESS_TEXT ->
                 vm.receiveText(intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString())
             Intent.ACTION_SEND -> {
@@ -84,9 +93,14 @@ class MainActivity : ComponentActivity() {
         intent.action = null
     }
 
-    private companion object {
+    companion object {
+        /** From the quick-translate card: EXTRA_TEXT = source, [EXTRA_TRANSLATION] / [EXTRA_TARGET] optional. */
+        const val ACTION_TRANSLATE_TEXT = "com.nekohome.translate.action.TRANSLATE_TEXT"
+        const val EXTRA_TRANSLATION = "com.nekohome.translate.extra.TRANSLATION"
+        const val EXTRA_TARGET = "com.nekohome.translate.extra.TARGET"
+
         // Same scrims androidx.activity uses by default for 3-button navigation.
-        val LIGHT_SCRIM = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)
-        val DARK_SCRIM = Color.argb(0x80, 0x1b, 0x1b, 0x1b)
+        private val LIGHT_SCRIM = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)
+        private val DARK_SCRIM = Color.argb(0x80, 0x1b, 0x1b, 0x1b)
     }
 }

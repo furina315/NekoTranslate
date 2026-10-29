@@ -4,11 +4,14 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,26 +22,51 @@ enum class SpeakTarget { SOURCE, OUTPUT }
 
 /** Why reading aloud could not start (shown as a snackbar that can open the system TTS settings). */
 sealed interface SpeakProblem {
-    /** No TTS engine installed / it failed to start. */
+    /** No TTS engine installed / the system default failed to start. */
     data object NoEngine : SpeakProblem
+
+    /** The engine the user picked ([packageName]) failed to start (onInit ERROR). */
+    data class EngineInitFailed(val packageName: String) : SpeakProblem
 
     /**
      * The engine has no voice for [code]; [missingData] = supported but the voice data isn't
      * downloaded. [chinese] = Chinese text and the engine lacks a Chinese voice altogether
-     * (LANG_MISSING_DATA / LANG_NOT_SUPPORTED): worth suggesting another engine.
+     * (LANG_MISSING_DATA / LANG_NOT_SUPPORTED): worth suggesting another engine. Only reported for
+     * the system default engine (see [TtsVoicePlan.onNoMatch]).
      */
     data class MissingVoice(val code: String, val missingData: Boolean, val chinese: Boolean = false) : SpeakProblem
 
-    data object Failed : SpeakProblem
+    /** speak() was refused or the engine reported an error ([errorCode], TextToSpeech.ERROR_*). */
+    data class Failed(val errorCode: Int = TextToSpeech.ERROR) : SpeakProblem
+
+    /** The engine took the text but never started it (engine process died or hung). */
+    data object NoResponse : SpeakProblem
+}
+
+/** Progress worth telling the user while a (slow, third-party) engine starts. */
+enum class SpeakNotice {
+    /** Still binding / loading its model after a moment: 「朗读引擎加载中…」. */
+    ENGINE_LOADING,
+    /** Not ready after [TtsInitGate.timeoutMs]; the request stays queued a while longer. */
+    ENGINE_SLOW,
+    /** Gave up waiting ([TtsInitGate.giveUpMs]). */
+    ENGINE_GAVE_UP,
 }
 
 /**
  * Thin wrapper around a [TextToSpeech] engine (the system default, or the one picked with
  * [setEngine]). The engine is created lazily on the first request (binding it costs a few hundred
- * ms and most sessions never speak) and released by [shutdown] or when the engine changes. Call
- * everything from the main thread; [speaking] may change from engine threads.
+ * ms and most sessions never speak) and released by [shutdown] or when the engine changes. A
+ * request made while the engine starts is queued until onInit ([TtsInitGate]). Call everything
+ * from the main thread; [speaking] may change from engine threads.
+ *
+ * Diagnostics: `adb logcat -s NekoTts`.
  */
-class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
+class Speaker(
+    context: Context,
+    private val onProblem: (SpeakProblem) -> Unit,
+    private val onNotice: (SpeakNotice) -> Unit = {},
+) {
 
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -56,14 +84,19 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
     private var enginePackage: String? = null
     private var bindingKey: String? = null
 
-    /** [bindingKey] the live [tts] instance was created with. */
+    /** [bindingKey] / package the live [tts] instance was created with. */
     private var instanceKey: String? = null
-    private var ready = false
-    private var pending: Request? = null
+    private var instancePackage: String? = null
+
+    private val gate = TtsInitGate<Request>()
 
     /** Bumped on every start / stop; utterance ids carry it so stale callbacks are ignored. */
     @Volatile
     private var session = 0
+
+    /** Session whose first utterance has reported onStart (watchdog). */
+    @Volatile
+    private var startedSession = -1
 
     /** Starts reading [text] in language [code], or stops if [target] is already being read. */
     fun toggle(target: SpeakTarget, text: String, code: String) {
@@ -76,8 +109,9 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
 
     fun stop() {
         session++
-        pending = null
-        if (ready) tts?.stop()
+        gate.cancel()
+        main.removeCallbacks(initTicker)
+        if (gate.state == TtsInitGate.State.READY) runCatching { tts?.stop() }
         _speaking.value = null
     }
 
@@ -94,55 +128,92 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
 
     fun shutdown() {
         stop()
-        tts?.shutdown()
+        runCatching { tts?.shutdown() }
         tts = null
-        ready = false
+        gate.reset()
     }
 
     private fun speak(request: Request) {
         stop()
         if (request.text.isBlank()) return
-        val engine = tts
-        if (engine != null && ready) {
-            start(engine, request)
-            return
-        }
-        // Show the button as active right away; the request runs once the engine is up.
-        pending = request
+        // Show the button as active right away; a queued request runs once the engine is up.
         _speaking.value = request.target
-        if (engine == null) {
-            var created: TextToSpeech? = null
-            val listener = TextToSpeech.OnInitListener { status -> main.post { onInit(created, status) } }
-            created = try {
-                val pkg = enginePackage
-                if (pkg != null) TextToSpeech(appContext, listener, pkg) else TextToSpeech(appContext, listener)
-            } catch (e: Exception) {
-                null
+        when (val action = gate.request(request, SystemClock.elapsedRealtime())) {
+            is TtsInitGate.Action.Speak -> tts?.let { start(it, action.request) } ?: run {
+                gate.reset()
+                speak(request)
             }
-            tts = created
-            instanceKey = bindingKey
-            if (created == null) onInit(null, TextToSpeech.ERROR)
+            is TtsInitGate.Action.Queued -> scheduleTicks()
+            is TtsInitGate.Action.StartInit -> {
+                createEngine()
+                scheduleTicks()
+            }
+        }
+    }
+
+    private fun createEngine() {
+        runCatching { tts?.shutdown() }
+        var created: TextToSpeech? = null
+        val listener = TextToSpeech.OnInitListener { status -> main.post { onInit(created, status) } }
+        val pkg = enginePackage
+        Log.i(TAG, "binding engine ${pkg ?: "(system default)"}")
+        created = try {
+            if (pkg != null) TextToSpeech(appContext, listener, pkg) else TextToSpeech(appContext, listener)
+        } catch (e: Exception) {
+            Log.w(TAG, "creating TextToSpeech for ${pkg ?: "(system default)"} failed", e)
+            null
+        }
+        tts = created
+        instanceKey = bindingKey
+        instancePackage = pkg
+        if (created == null) onInit(null, TextToSpeech.ERROR)
+    }
+
+    private fun scheduleTicks() {
+        main.removeCallbacks(initTicker)
+        main.postDelayed(initTicker, TICK_MS)
+    }
+
+    private val initTicker = object : Runnable {
+        override fun run() {
+            when (gate.onTick(SystemClock.elapsedRealtime())) {
+                TtsInitGate.Tick.LOADING -> onNotice(SpeakNotice.ENGINE_LOADING)
+                TtsInitGate.Tick.TIMEOUT -> {
+                    Log.w(TAG, "engine ${instancePackage ?: "(system default)"} not ready after ${gate.timeoutMs} ms")
+                    onNotice(SpeakNotice.ENGINE_SLOW)
+                }
+                TtsInitGate.Tick.GIVE_UP -> {
+                    Log.w(TAG, "engine ${instancePackage ?: "(system default)"} not ready after ${gate.giveUpMs} ms, request dropped")
+                    _speaking.value = null
+                    onNotice(SpeakNotice.ENGINE_GAVE_UP)
+                    return
+                }
+                TtsInitGate.Tick.NONE -> Unit
+            }
+            if (gate.state == TtsInitGate.State.INITIALIZING && gate.pending != null) main.postDelayed(this, TICK_MS)
         }
     }
 
     private fun onInit(instance: TextToSpeech?, status: Int) {
         // A callback from an instance released by an engine switch: ignore it.
         if (instance != null && instance !== tts) {
-            instance.shutdown()
+            runCatching { instance.shutdown() }
             return
         }
+        main.removeCallbacks(initTicker)
         val engine = tts
-        val request = pending
-        pending = null
+        val pkg = instancePackage
         if (status != TextToSpeech.SUCCESS || engine == null) {
-            engine?.shutdown()
+            Log.w(TAG, "onInit failed: engine=${pkg ?: "(system default)"} status=$status")
+            runCatching { engine?.shutdown() }
             tts = null
-            ready = false
+            val request = gate.onInit(success = false)
+            gate.reset()
             _speaking.value = null
-            if (request != null) onProblem(SpeakProblem.NoEngine)
+            if (request != null) onProblem(if (pkg != null) SpeakProblem.EngineInitFailed(pkg) else SpeakProblem.NoEngine)
             return
         }
-        ready = true
+        Log.i(TAG, "onInit ok: engine=${pkg ?: "(system default)"}")
         engine.setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -150,45 +221,98 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
                 .build(),
         )
         engine.setOnUtteranceProgressListener(listener)
-        if (request != null) start(engine, request)
+        val request = gate.onInit(success = true)
+        if (request != null) start(engine, request) else if (_speaking.value != null && gate.pending == null) {
+            // Nothing queued any more (stopped while starting).
+            _speaking.value = null
+        }
     }
 
-    private fun start(engine: TextToSpeech, request: Request) {
+    /** Sets the language for [request]; false when it must not be spoken (problem reported). */
+    private fun chooseVoice(engine: TextToSpeech, request: Request): Boolean {
         val locale = TtsLocales.localeFor(request.code)
-        val availability = ArrayList<Int>(2)
-        val chosen = sequenceOf(locale, TtsLocales.fallbackFor(locale)).filterNotNull().firstOrNull { l ->
-            val r = engine.isLanguageAvailable(l)
-            availability += r
-            r >= TextToSpeech.LANG_AVAILABLE && engine.setLanguage(l) >= TextToSpeech.LANG_AVAILABLE
+        val explicit = instancePackage != null
+        val availability = ArrayList<Int>(4)
+        for (l in TtsVoicePlan.candidates(locale)) {
+            val avail = runCatching { engine.isLanguageAvailable(l) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
+            availability += avail
+            if (avail >= TextToSpeech.LANG_AVAILABLE) {
+                val set = runCatching { engine.setLanguage(l) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
+                if (set >= TextToSpeech.LANG_AVAILABLE) return true
+                availability += set
+            }
         }
-        if (chosen == null) {
-            _speaking.value = null
-            onProblem(
-                SpeakProblem.MissingVoice(
-                    code = request.code,
-                    missingData = TextToSpeech.LANG_MISSING_DATA in availability,
-                    chinese = TtsEngineChoice.lacksChineseVoice(locale, availability),
-                ),
+        // Some engines only expose voices (or match odd locale codes): pick one by language.
+        val voices = runCatching { engine.voices.orEmpty() }.getOrDefault(emptySet()).map { v ->
+            VoiceInfo(
+                name = v.name,
+                locale = v.locale,
+                needsNetwork = v.isNetworkConnectionRequired,
+                notInstalled = TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED in v.features.orEmpty(),
             )
-            return
         }
-        val maxLen = minOf(TextToSpeech.getMaxSpeechInputLength(), MAX_CHUNK)
-        val chunks = TtsLocales.chunk(request.text, maxLen)
-        if (chunks.isEmpty()) return
-        val sid = ++session
-        _speaking.value = request.target
-        chunks.forEachIndexed { i, chunk ->
-            val mode = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-            if (engine.speak(chunk, mode, null, "$sid:$i:${chunks.size}") != TextToSpeech.SUCCESS) {
-                stop()
-                onProblem(SpeakProblem.Failed)
-                return
+        val voice = TtsVoicePlan.pickVoice(voices, locale)
+        if (voice != null) {
+            val v = runCatching { engine.voices.firstOrNull { it.name == voice.name } }.getOrNull()
+            if (v != null && runCatching { engine.setVoice(v) }.getOrDefault(TextToSpeech.ERROR) == TextToSpeech.SUCCESS) {
+                Log.i(TAG, "language ${locale.toLanguageTag()} via voice ${voice.name} (${voice.locale})")
+                return true
+            }
+        }
+        val ids = availability.joinToString()
+        return when (val d = TtsVoicePlan.onNoMatch(explicit, locale, availability)) {
+            NoMatchDecision.EngineDefault -> {
+                Log.i(TAG, "engine $instancePackage has no ${locale.toLanguageTag()} voice (results $ids, " +
+                    "${voices.size} voices); speaking with its default voice")
+                runCatching { engine.defaultVoice }.getOrNull()?.let { dv -> runCatching { engine.setVoice(dv) } }
+                true
+            }
+            is NoMatchDecision.Block -> {
+                Log.i(TAG, "system engine has no ${locale.toLanguageTag()} voice (results $ids)")
+                _speaking.value = null
+                onProblem(SpeakProblem.MissingVoice(code = request.code, missingData = d.missingData, chinese = d.chinese))
+                false
             }
         }
     }
 
+    private fun start(engine: TextToSpeech, request: Request) {
+        if (!chooseVoice(engine, request)) return
+        val maxLen = minOf(TextToSpeech.getMaxSpeechInputLength(), MAX_CHUNK)
+        val chunks = TtsLocales.chunk(request.text, maxLen)
+        if (chunks.isEmpty()) {
+            _speaking.value = null
+            return
+        }
+        val sid = ++session
+        _speaking.value = request.target
+        val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1f) }
+        chunks.forEachIndexed { i, chunk ->
+            val mode = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val result = runCatching { engine.speak(chunk, mode, params, utteranceId(sid, i, chunks.size)) }
+                .getOrDefault(TextToSpeech.ERROR)
+            if (result != TextToSpeech.SUCCESS) {
+                Log.w(TAG, "speak() refused: engine=${instancePackage ?: "(system default)"} result=$result chunk=$i/${chunks.size}")
+                stop()
+                onProblem(SpeakProblem.Failed(result))
+                return
+            }
+        }
+        // Watchdog: an engine whose process died / hung never calls back at all.
+        main.postDelayed({
+            if (sid == session && startedSession != sid && _speaking.value != null) {
+                Log.w(TAG, "engine ${instancePackage ?: "(system default)"} accepted the text but never started (${NO_START_MS} ms)")
+                stop()
+                onProblem(SpeakProblem.NoResponse)
+            }
+        }, NO_START_MS)
+    }
+
     private val listener = object : UtteranceProgressListener() {
-        override fun onStart(utteranceId: String?) = Unit
+        override fun onStart(utteranceId: String?) {
+            val (sid) = parse(utteranceId) ?: return
+            startedSession = sid
+        }
 
         override fun onDone(utteranceId: String?) {
             val (sid, index, count) = parse(utteranceId) ?: return
@@ -200,23 +324,35 @@ class Speaker(context: Context, private val onProblem: (SpeakProblem) -> Unit) {
         override fun onError(utteranceId: String?) = onError(utteranceId, TextToSpeech.ERROR)
 
         override fun onError(utteranceId: String?, errorCode: Int) {
+            Log.w(TAG, "onError: engine=${instancePackage ?: "(system default)"} utterance=$utteranceId errorCode=$errorCode")
             val (sid) = parse(utteranceId) ?: return
             if (sid != session) return
             main.post {
                 if (sid == session) {
                     stop()
-                    onProblem(SpeakProblem.Failed)
+                    onProblem(SpeakProblem.Failed(errorCode))
                 }
             }
         }
+
+        override fun onStop(utteranceId: String?, interrupted: Boolean) = Unit
     }
 
+    private val instanceTag = Integer.toHexString(System.identityHashCode(this))
+
+    /** Unique per speak and per Speaker instance: `<sid>:<index>:<count>:<instance>`. */
+    private fun utteranceId(sid: Int, index: Int, count: Int) = "$sid:$index:$count:$instanceTag"
+
     private fun parse(id: String?): List<Int>? =
-        id?.split(':')?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 3 }
+        id?.split(':')?.take(3)?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 3 }
 
     private companion object {
+        const val TAG = "NekoTts"
+
         /** Shorter utterances start sooner; the engine queues the rest seamlessly. */
         const val MAX_CHUNK = 1000
+        const val TICK_MS = 500L
+        const val NO_START_MS = 20_000L
     }
 }
 

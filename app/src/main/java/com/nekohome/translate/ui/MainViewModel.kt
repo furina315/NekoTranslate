@@ -32,6 +32,7 @@ import com.nekohome.translate.engine.ImagePrep
 import com.nekohome.translate.engine.ImageStage
 import com.nekohome.translate.engine.LoadedModel
 import com.nekohome.translate.engine.MemoryStats
+import com.nekohome.translate.engine.ModelSession
 import com.nekohome.translate.engine.TranslationEngine
 import com.nekohome.translate.engine.throttleLatest
 import androidx.compose.runtime.Immutable
@@ -39,12 +40,14 @@ import com.nekohome.translate.llama.GpuMode
 import com.nekohome.translate.llama.LlamaSession
 import com.nekohome.translate.llama.RgbImage
 import com.nekohome.translate.llama.StopReason
+import com.nekohome.translate.tts.SpeakNotice
 import com.nekohome.translate.tts.SpeakProblem
 import com.nekohome.translate.tts.SpeakTarget
 import com.nekohome.translate.tts.Speaker
 import com.nekohome.translate.tts.TtsEngineChoice
 import com.nekohome.translate.tts.TtsEngineList
 import com.nekohome.translate.tts.TtsLocales
+import com.nekohome.translate.tts.TtsVoicePlan
 import com.nekohome.translate.tts.queryTtsEngines
 import com.nekohome.translate.tts.localeDisplayName
 import kotlinx.coroutines.CancellationException
@@ -158,16 +161,21 @@ data class MainUiState(
 }
 
 /**
- * The one ViewModel behind all three tabs (activity-scoped), so the [TranslationEngine] and the
- * loaded model survive tab switches.
+ * The one ViewModel behind all three tabs (activity-scoped). The loaded model itself lives in the
+ * process-wide [ModelSession], shared with the quick-translate card (选中文字 / 分享).
  */
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repository = ModelRepository(app)
     private val paramsStore = ModelParamsStore(app)
     private val settingsRepository = SettingsRepository(app)
-    private val engine = TranslationEngine(app)
-    private val speaker = Speaker(app, ::onSpeakProblem)
+    private val session = ModelSession.get(app)
+    private val engine: TranslationEngine = session.engine
+    private val speaker = Speaker(app, ::onSpeakProblem, ::onSpeakNotice)
+
+    /** Engine package 朗读 is bound to (null = system default); decides whether the Chinese voice sheet may show. */
+    @Volatile
+    private var ttsEnginePackage: String? = null
     private val history = HistoryStore.get(app)
 
     /** Mirrors [com.nekohome.translate.data.AppSettings.historyEnabled]. */
@@ -203,6 +211,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private var translateJob: Job? = null
+
+    /** loadModel() is running (vs. a load started by the quick-translate card). */
+    @Volatile
+    private var ownLoad = false
     private var imageJob: Job? = null
 
     /** Pixels of the picked image (thumbnail in [MainUiState.imageThumb]). */
@@ -219,8 +231,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val info = runCatching { engine.systemInfo() }.getOrElse { "native init failed: ${it.message}" }
             _state.update { it.copy(systemInfo = info) }
-            val gpu = runCatching { engine.gpuState() }.getOrElse { GpuState(device = "") }
+            val gpu = runCatching { session.gpuState() }.getOrElse { GpuState(device = "") }
             _state.update { it.copy(gpu = gpu) }
+        }
+        // The loaded model is shared: the quick-translate card may load one (or be loading one).
+        viewModelScope.launch {
+            combine(session.loaded, session.loadingPath) { l, p -> l to p }.collect { (l, p) ->
+                _state.update { st ->
+                    var next = st
+                    if (st.loaded != l) next = next.copy(loaded = l, loadInfo = l?.let { loadInfoFor(it) } ?: "", stats = null)
+                    if (p != null && st.loadingPath != p) next = next.copy(loadingPath = p)
+                    // A load started elsewhere (the quick card) finished; our own load clears it itself.
+                    if (p == null && st.loadingPath != null && !ownLoad) next = next.copy(loadingPath = null)
+                    next
+                }
+            }
+        }
+        viewModelScope.launch {
+            _state.map { it.targetCode }.distinctUntilChanged().collect { session.lastTargetCode.value = it }
         }
         viewModelScope.launch {
             settingsRepository.settings.map { it.chineseVoiceHintDismissed }.distinctUntilChanged().collect {
@@ -240,7 +268,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ) { saved, list ->
                 val pkg = TtsEngineChoice.resolve(saved, list.engines)
                 pkg to TtsEngineChoice.bindingKey(pkg, list.systemDefault)
-            }.distinctUntilChanged().collect { (pkg, key) -> speaker.setEngine(pkg, key) }
+            }.distinctUntilChanged().collect { (pkg, key) ->
+                ttsEnginePackage = pkg
+                speaker.setEngine(pkg, key)
+            }
         }
         viewModelScope.launch {
             settingsRepository.settings.map { it.defaultTargetCode }.distinctUntilChanged().collect { code ->
@@ -300,7 +331,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun loadModel(model: LocalModel) {
         val st = _state.value
         if (st.isLoading || st.isTranslating) return
+        ownLoad = true
         viewModelScope.launch {
+            try {
+                loadModelInternal(model)
+            } finally {
+                ownLoad = false
+            }
+        }
+    }
+
+    private suspend fun loadModelInternal(model: LocalModel) {
+        run {
             paramsReady.await()
             val params = _state.value.paramsFor(model).loadParams(_state.value.gpu.usable)
             _state.update {
@@ -308,20 +350,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             clearImageInternal()
             try {
-                val loaded = engine.load(model.file, params)
-                val rss = MemoryStats.residentMb()
+                val loaded = session.load(model.file, params)
                 _state.update {
                     it.copy(
                         loaded = loaded,
                         loadingPath = null,
                         stats = null,
-                        loadInfo = str(
-                            R.string.models_load_info,
-                            String.format(Locale.US, "%.2f", loaded.loadMs / 1000.0),
-                            loaded.info.nCtx,
-                            params.nThreads,
-                            (rss?.let { mb -> " · RSS $mb MB" } ?: "") + gpuLoadInfo(loaded),
-                        ),
+                        loadInfo = loadInfoFor(loaded),
                         message = str(R.string.msg_loaded, model.file.nameWithoutExtension),
                     )
                 }
@@ -334,11 +369,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 「加载耗时 · 上下文 · 线程 · RSS · GPU」 line under the loaded model. */
+    private fun loadInfoFor(loaded: LoadedModel): String {
+        val rss = MemoryStats.residentMb()
+        return str(
+            R.string.models_load_info,
+            String.format(Locale.US, "%.2f", loaded.loadMs / 1000.0),
+            loaded.info.nCtx,
+            loaded.params.nThreads,
+            (rss?.let { mb -> " · RSS $mb MB" } ?: "") + gpuLoadInfo(loaded),
+        )
+    }
+
     fun unloadModel() {
         if (_state.value.isTranslating) return
         stopSpeaking()
         viewModelScope.launch {
-            engine.unload()
+            session.unload()
             clearImageInternal()
             _state.update { it.copy(loaded = null, loadInfo = "", stats = null) }
         }
@@ -349,12 +396,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (st.isLoading || st.isTranslating) return
         viewModelScope.launch {
             if (_state.value.isLoaded(model)) {
-                engine.unload()
+                session.unload()
                 clearImageInternal()
                 _state.update { it.copy(loaded = null, loadInfo = "", stats = null) }
             }
             val projector = _state.value.paramsFor(model).mmproj
             repository.delete(model)
+            session.forgetModel(model.fileName)
             if (projector != null) deleteMmprojIfUnused(projector, exceptModel = model.fileName)
             saveJobs.remove(model.fileName)?.cancel()
             paramsStore.remove(model.fileName)
@@ -576,6 +624,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (t is CancellationException) throw t
                 gpu.copy(failure = t.message ?: t.javaClass.simpleName)
             }
+            session.rememberGpu(result)
             _state.update { it.copy(gpu = result.copy(checking = false)) }
             if (result.usable) {
                 updateParams(model) { it.copy(gpuMode = mode) }
@@ -591,6 +640,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.gpu.checking) return
         viewModelScope.launch {
             val gpu = runCatching { engine.gpuReset() }.getOrNull() ?: return@launch
+            session.rememberGpu(gpu)
             _state.update { it.copy(gpu = gpu) }
         }
     }
@@ -636,16 +686,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         setOutput("")
         _state.update { it.copy(input = "", stats = null) }
     }
-    /** Text from the 选中文字菜单 or a 分享: fill the input and translate when a model is ready. */
-    fun receiveText(raw: String?) {
+    /**
+     * Text from outside (分享 / the quick-translate card's 「在 App 中打开」): fill the input and
+     * translate when a model is ready. A [translated] result from the card is shown as is (with
+     * its [targetCode]) instead of translating again.
+     */
+    fun receiveText(raw: String?, translated: String? = null, targetCode: String? = null) {
         val text = IncomingText.clean(raw) ?: return
+        if (_state.value.isTranslating) stop()
         translateJob?.cancel()
         stopSpeaking()
         clearImageInternal()
         setOutput("")
-        _state.update { it.copy(input = text, stats = null, incomingSeq = it.incomingSeq + 1) }
-        if (_state.value.canTranslate) translate()
-        else _state.update { it.copy(message = str(R.string.msg_incoming_need_model)) }
+        _state.update {
+            it.copy(
+                input = text,
+                stats = null,
+                incomingSeq = it.incomingSeq + 1,
+                targetCode = targetCode ?: it.targetCode,
+                sourceCode = if (targetCode != null && it.sourceCode == targetCode) Language.AUTO_CODE else it.sourceCode,
+            )
+        }
+        val done = translated?.takeIf { it.isNotBlank() }
+        when {
+            done != null -> setOutput(done)
+            _state.value.canTranslate -> translate()
+            _state.value.isLoading -> Unit // the shared model is loading; the user taps 翻译 when it is ready
+            else -> _state.update { it.copy(message = str(R.string.msg_incoming_need_model)) }
+        }
     }
 
     /** A shared image: translate it when the model supports images, else say why not. */
@@ -703,21 +771,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun onSpeakProblem(problem: SpeakProblem) {
-        if (problem is SpeakProblem.MissingVoice && problem.chinese && !chineseVoiceHintDismissed) {
+        if (problem is SpeakProblem.MissingVoice && problem.chinese &&
+            TtsVoicePlan.mayShowChineseVoiceSheet(explicitEngine = ttsEnginePackage != null, hintDismissed = chineseVoiceHintDismissed)
+        ) {
             _state.update { it.copy(chineseVoiceSheet = true) }
             return
         }
         val (text, action) = when (problem) {
             SpeakProblem.NoEngine -> str(R.string.tts_no_engine) to MessageAction.OPEN_TTS_SETTINGS
+            is SpeakProblem.EngineInitFailed -> {
+                val label = _ttsEngines.value?.find(problem.packageName)?.label ?: problem.packageName
+                str(R.string.tts_engine_init_failed, label) to MessageAction.OPEN_TTS_SETTINGS
+            }
+            SpeakProblem.NoResponse -> str(R.string.tts_no_response) to null
             is SpeakProblem.MissingVoice -> {
                 val name = _state.value.activeProfile.findLanguage(problem.code)?.takeUnless { it.isAuto }?.nameZh
                     ?: localeDisplayName(problem.code)
                 str(if (problem.missingData) R.string.tts_missing_data else R.string.tts_unsupported, name) to
                     MessageAction.OPEN_TTS_SETTINGS
             }
-            SpeakProblem.Failed -> str(R.string.tts_failed) to null
+            is SpeakProblem.Failed -> str(R.string.tts_failed_code, problem.errorCode) to null
         }
         _state.update { it.copy(message = text, messageAction = action) }
+    }
+
+    private fun onSpeakNotice(notice: SpeakNotice) {
+        val text = when (notice) {
+            SpeakNotice.ENGINE_LOADING -> str(R.string.tts_engine_loading)
+            SpeakNotice.ENGINE_SLOW -> str(R.string.tts_engine_slow)
+            SpeakNotice.ENGINE_GAVE_UP -> str(R.string.tts_engine_gave_up)
+        }
+        _state.update { it.copy(message = text, messageAction = null) }
     }
 
     fun swapLanguages() {
@@ -751,11 +835,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             engine.translate(profile, profile.buildUserPrompt(st.sourceLanguage, st.targetLanguage, st.input), sampling)
         }
         translateJob?.cancel()
+        val queued = session.busy.value != null
         translateJob = viewModelScope.launch {
             setOutput("")
-            _state.update { it.copy(isTranslating = true, stats = null, message = null, messageAction = null, imageStage = null) }
+            _state.update {
+                it.copy(
+                    isTranslating = true, stats = null, imageStage = null, messageAction = null,
+                    message = if (queued) str(R.string.msg_queued_behind_quick) else null,
+                )
+            }
             try {
-                events.throttleLatest(OUTPUT_FRAME_MS).collect { ev ->
+                session.serialized(ModelSession.OWNER_MAIN, events).throttleLatest(OUTPUT_FRAME_MS).collect { ev ->
                     when (ev) {
                         is GenerationEvent.Stage -> _state.update {
                             if (it.imageStage == ev.stage) it
@@ -791,7 +881,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun stop() = engine.cancel()
+    fun stop() {
+        if (session.busy.value == ModelSession.OWNER_MAIN) session.cancel(ModelSession.OWNER_MAIN)
+        else translateJob?.cancel() // still queued behind the quick-translate card
+    }
 
     // ------------------------------------------------------------------ history
 
@@ -829,7 +922,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         speaker.shutdown()
-        engine.cancel()
+        // The model stays loaded in the shared session (the quick-translate card may use it).
+        session.cancel(ModelSession.OWNER_MAIN)
         super.onCleared()
     }
 

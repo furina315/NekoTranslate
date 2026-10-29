@@ -2,4 +2,17 @@
 <resources>
     <!-- Window theme only; Compose draws the Material 3 UI (see ui/theme/Theme.kt). -->
     <style name="Theme.NekoTranslate" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- Quick-translate card (选中文字 / 分享): translucent full-screen window, Compose draws the
+         scrim and the bottom card and animates them; no window animation. -->
+    <style name="Theme.NekoTranslate.Quick" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
 </resources>

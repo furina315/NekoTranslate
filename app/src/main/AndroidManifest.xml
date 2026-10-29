@@ -34,22 +34,40 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- 选中文字菜单「NekoTranslate 翻译」 -->
-            <intent-filter>
-                <action android:name="android.intent.action.PROCESS_TEXT" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-            </intent-filter>
-            <!-- 系统分享：文本 / 图片 -->
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-            </intent-filter>
+            <!-- 系统分享图片：走主界面图片翻译（文本分享和选中文字走下面的悬浮翻译卡片） -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- 悬浮翻译卡片：在当前 App 上方弹出，不进入主界面。
+             PROCESS_TEXT 由调用方 startActivityForResult 启动，留在调用方任务里（standard 启动模式，
+             「替换」的结果才能送回）；分享（NEW_TASK）时 taskAffinity="" 让它单独成一个任务。
+             excludeFromRecents：关闭后回到原 App，最近任务里不留卡片。 -->
+        <activity
+            android:name=".ui.quick.QuickTranslateActivity"
+            android:exported="true"
+            android:label="@string/quick_label"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:launchMode="standard"
+            android:noHistory="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.NekoTranslate.Quick">
+            <!-- 选中文字菜单「NekoTranslate 翻译」 -->
+            <intent-filter android:label="@string/quick_label">
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <!-- 系统分享：文本 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
 

@@ -50,7 +50,7 @@ object TtsEngineChoice {
             .sortedWith(compareByDescending<TtsEngineInfo> { it.system }.thenBy { it.label.lowercase(Locale.ROOT) })
 
     /** Chinese-family languages (Mandarin, Cantonese and other Sinitic codes an engine may use). */
-    private val CHINESE = setOf("zh", "yue", "cmn", "wuu", "nan", "hak", "gan", "hsn", "cdo", "cjy", "cpx", "czh", "czo", "mnp", "lzh")
+    private val CHINESE = setOf("zh", "zho", "chi", "yue", "cmn", "wuu", "nan", "hak", "gan", "hsn", "cdo", "cjy", "cpx", "czh", "czo", "mnp", "lzh")
 
     fun isChinese(locale: Locale): Boolean = locale.language.lowercase(Locale.ROOT) in CHINESE
 
