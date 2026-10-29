@@ -122,6 +122,8 @@
     <string name="msg_mmproj_import_failed">导入 mmproj 失败：%1$s</string>
     <string name="msg_mmproj_no_model">%1$s 是视觉组件（mmproj），但没找到对应的模型。请先导入模型，再在模型卡片上点「关联 mmproj」。</string>
     <string name="msg_mmproj_removed">已移除视觉组件</string>
+    <string name="msg_incoming_need_model">已填入文字，请先加载模型后翻译</string>
+    <string name="msg_incoming_no_image">当前模型没有开启图片翻译，无法翻译分享的图片</string>
     <string name="msg_image_failed">无法读取图片：%1$s</string>
     <string name="msg_gpu_passed">GPU 自检通过，重新加载模型后生效</string>
     <string name="msg_gpu_failed">GPU 自检未通过（%1$s），已保持关闭</string>

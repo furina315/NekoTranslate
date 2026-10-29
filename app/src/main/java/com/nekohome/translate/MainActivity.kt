@@ -1,7 +1,11 @@
 package com.nekohome.translate
 
 import android.graphics.Color
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import androidx.activity.viewModels
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -21,6 +25,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if (savedInstanceState == null) handleIncoming(intent)
         setContent {
             val settingsVm: SettingsViewModel = viewModel()
             val settings by settingsVm.settings.collectAsStateWithLifecycle()
@@ -46,6 +51,37 @@ class MainActivity : ComponentActivity() {
                 AppRoot(vm = vm, settingsVm = settingsVm, settings = settings)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncoming(intent)
+    }
+
+    /** 选中文字菜单（PROCESS_TEXT）和系统分享（SEND 文本 / 图片）。 */
+    private fun handleIncoming(intent: Intent?) {
+        intent ?: return
+        val vm = viewModels<MainViewModel>().value
+        when (intent.action) {
+            Intent.ACTION_PROCESS_TEXT ->
+                vm.receiveText(intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString())
+            Intent.ACTION_SEND -> {
+                val type = intent.type.orEmpty()
+                if (type.startsWith("image/")) {
+                    val uri = if (Build.VERSION.SDK_INT >= 33) {
+                        intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                    } else {
+                        @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+                    }
+                    if (uri != null) vm.receiveImage(uri)
+                } else {
+                    vm.receiveText(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
+                }
+            }
+        }
+        // Handled: a recreate must not replay it.
+        intent.action = null
     }
 
     private companion object {

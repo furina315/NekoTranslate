@@ -127,6 +127,14 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
         )
     }
 
+    // Text / image handed over by 选中文字菜单 or 分享: show the translate tab.
+    LaunchedEffect(state.incomingSeq) {
+        if (state.incomingSeq > 0) {
+            tab = AppTab.TRANSLATE
+            showHistory = false
+        }
+    }
+
     // Reading aloud belongs to the 翻译 tab: leaving it stops the voice.
     LaunchedEffect(tab) {
         if (tab != AppTab.TRANSLATE) vm.stopSpeaking()

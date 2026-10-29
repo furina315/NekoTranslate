@@ -9,6 +9,7 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nekohome.translate.R
+import com.nekohome.translate.data.IncomingText
 import com.nekohome.translate.data.BuiltInProfiles
 import com.nekohome.translate.data.GpuGuard
 import com.nekohome.translate.data.HistoryEntry
@@ -121,6 +122,8 @@ data class MainUiState(
     val gpu: GpuState = GpuState(),
     /** The engine has no Chinese voice: show the install-an-engine bottom sheet. */
     val chineseVoiceSheet: Boolean = false,
+    /** Bumped when text / an image arrives from outside (选中文字菜单、分享); AppRoot jumps to 翻译. */
+    val incomingSeq: Int = 0,
 ) {
     val selectedModel: LocalModel? get() = models.firstOrNull { it.file.absolutePath == selectedPath }
     val loadedModel: LocalModel? get() = loaded?.let { l -> models.firstOrNull { it.file.absolutePath == l.path } }
@@ -633,6 +636,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         setOutput("")
         _state.update { it.copy(input = "", stats = null) }
     }
+    /** Text from the 选中文字菜单 or a 分享: fill the input and translate when a model is ready. */
+    fun receiveText(raw: String?) {
+        val text = IncomingText.clean(raw) ?: return
+        translateJob?.cancel()
+        stopSpeaking()
+        clearImageInternal()
+        setOutput("")
+        _state.update { it.copy(input = text, stats = null, incomingSeq = it.incomingSeq + 1) }
+        if (_state.value.canTranslate) translate()
+        else _state.update { it.copy(message = str(R.string.msg_incoming_need_model)) }
+    }
+
+    /** A shared image: translate it when the model supports images, else say why not. */
+    fun receiveImage(uri: Uri) {
+        _state.update { it.copy(incomingSeq = it.incomingSeq + 1) }
+        val st = _state.value
+        if (st.loaded == null) {
+            _state.update { it.copy(message = str(R.string.msg_incoming_need_model)) }
+        } else if (!st.imageSupported) {
+            _state.update { it.copy(message = str(R.string.msg_incoming_no_image)) }
+        } else {
+            pickImage(uri)
+        }
+    }
+
     fun dismissMessage() = _state.update { it.copy(message = null, messageAction = null) }
 
     // ------------------------------------------------------------------ read aloud (system TTS)
