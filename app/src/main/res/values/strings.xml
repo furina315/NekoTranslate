@@ -263,4 +263,26 @@
     <string name="history_empty_disabled">历史记录已关闭，可在「设置 → 翻译」里打开。</string>
     <string name="history_no_match">没有找到匹配的记录</string>
     <string name="msg_history_restored_no_model">已回填，加载模型后显示</string>
+    <string name="translate_segment_progress">第 %1$d/%2$d 段…</string>
+    <string name="settings_glossary">术语表</string>
+    <string name="settings_glossary_desc">固定人名、专有名词的译法，翻译时自动带上</string>
+    <string name="settings_glossary_count">%1$d 条 · 已开启</string>
+    <string name="settings_glossary_off">已关闭</string>
+    <string name="glossary_title">术语表</string>
+    <string name="glossary_back">返回</string>
+    <string name="glossary_add">添加术语</string>
+    <string name="glossary_enable">翻译时使用术语表</string>
+    <string name="glossary_enable_desc">只带上当前段落里出现的术语；Index-Translate 作为硬性约束，其他模型作为提示</string>
+    <string name="glossary_empty_title">还没有术语</string>
+    <string name="glossary_empty_body">点右上角「＋」添加，例如「Neko → 猫猫」。长文本每段都会单独匹配，保证人名和专有名词前后一致。</string>
+    <string name="glossary_source_label">原文</string>
+    <string name="glossary_target_label">译文</string>
+    <string name="glossary_edit_title">编辑术语</string>
+    <string name="glossary_new_title">添加术语</string>
+    <string name="glossary_save">保存</string>
+    <string name="glossary_cancel">取消</string>
+    <string name="glossary_deleted">已删除术语</string>
+    <string name="glossary_undo">撤销</string>
+    <string name="glossary_delete">删除</string>
+    <string name="glossary_hint">匹配时不区分大小写。</string>
 </resources>

@@ -6,6 +6,8 @@ import com.nekohome.translate.data.ChatFormat
 import com.nekohome.translate.data.GpuGuard
 import com.nekohome.translate.data.GpuState
 import com.nekohome.translate.data.ModelProfile
+import com.nekohome.translate.data.PlannedSegment
+import com.nekohome.translate.llama.StopReason
 import com.nekohome.translate.llama.ChatMessage
 import com.nekohome.translate.llama.GenerationStats
 import com.nekohome.translate.llama.LlamaBackend
@@ -45,7 +47,7 @@ sealed interface GenerationEvent {
      */
     data class Stage(val stage: ImageStage, val atMs: Long, val backend: String? = null) : GenerationEvent
     /** Text generated so far, already cleaned (think block / stop strings removed). */
-    data class Partial(val text: String) : GenerationEvent
+    data class Partial(val text: String, val segment: Int = 1, val segmentCount: Int = 1) : GenerationEvent
     data class Done(val text: String, val stats: GenerationStats) : GenerationEvent
 }
 
@@ -199,6 +201,40 @@ class TranslationEngine(context: Context) {
         }
         val finalText = cleaner.clean(raw).text
         send(GenerationEvent.Done(finalText, stats))
+    }.buffer(Channel.CONFLATED).flowOn(dispatcher)
+
+    /**
+     * Translates [segments] one after another (one generation each, KV cache reset per segment),
+     * streaming the joined text. A single segment behaves like [translate]. Stops early on cancel
+     * or a native error; the final [GenerationEvent.Done] carries the summed stats.
+     */
+    fun translateSegments(
+        profile: ModelProfile,
+        segments: List<PlannedSegment>,
+        sampling: SamplingParams = profile.sampling,
+    ): Flow<GenerationEvent> = channelFlow {
+        val s = session ?: throw IllegalStateException("No model loaded")
+        val total = segments.size
+        val done = StringBuilder()
+        val stats = ArrayList<GenerationStats>()
+        for ((idx, seg) in segments.withIndex()) {
+            if (isClosedForSend) break
+            val prefix = if (idx == 0) "" else done.toString() + seg.separator
+            trySend(GenerationEvent.Partial(prefix, idx + 1, total))
+            val prompt = formatPrompt(s, profile.chatFormat, seg.prompt)
+            val raw = StringBuilder()
+            val cleaner = OutputCleaner(profile.stopStrings)
+            val st = s.generate(prompt, sampling) { piece ->
+                raw.append(piece)
+                val cleaned = cleaner.clean(raw)
+                trySend(GenerationEvent.Partial(prefix + cleaned.text, idx + 1, total))
+                !cleaned.hitStop && !isClosedForSend
+            }
+            stats.add(st)
+            done.append(prefix.substring(done.length)).append(cleaner.clean(raw).text)
+            if (st.stopReason == StopReason.CANCELLED || st.stopReason == StopReason.ERROR || !st.ok) break
+        }
+        send(GenerationEvent.Done(done.toString(), SegmentStats.combine(stats)))
     }.buffer(Channel.CONFLATED).flowOn(dispatcher)
 
     /**

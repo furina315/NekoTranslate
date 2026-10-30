@@ -58,6 +58,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nekohome.translate.ui.glossary.GlossaryScreen
 import com.nekohome.translate.ui.history.HistoryScreen
 import com.nekohome.translate.ui.history.HistoryViewModel
 import com.nekohome.translate.ui.motion.Springs
@@ -89,6 +90,7 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
     var tab by rememberSaveable { mutableStateOf(AppTab.TRANSLATE) }
     val tabStates = rememberSaveableStateHolder()
     var showHistory by rememberSaveable { mutableStateOf(false) }
+    var showGlossary by rememberSaveable { mutableStateOf(false) }
     val historyVm: HistoryViewModel = viewModel()
     val snackbar = remember { SnackbarHostState() }
 
@@ -143,6 +145,7 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
     BackHandler(enabled = tab != AppTab.TRANSLATE) { tab = AppTab.TRANSLATE }
     // Registered after the tab handler so it wins while the history page is open.
     BackHandler(enabled = showHistory) { showHistory = false }
+    BackHandler(enabled = showGlossary) { showGlossary = false }
 
     KeepScreenOn(settings.keepScreenOn && (state.isTranslating || state.isLoading))
 
@@ -215,9 +218,24 @@ fun AppRoot(vm: MainViewModel, settingsVm: SettingsViewModel, settings: AppSetti
                         onOpenHistory = { showHistory = true },
                     )
                     AppTab.MODELS -> ModelsScreen(state = state, vm = vm)
-                    AppTab.SETTINGS -> SettingsScreen(settings = settings, vm = settingsVm, ttsEngines = ttsEngines)
+                    AppTab.SETTINGS -> SettingsScreen(
+                        settings = settings, vm = settingsVm, ttsEngines = ttsEngines,
+                        onOpenGlossary = { showGlossary = true },
+                    )
                 }
             }
+        }
+    }
+
+    AnimatedVisibility(
+        visible = showGlossary,
+        enter = if (reduceMotion) EnterTransition.None else
+            slideInHorizontally(Springs.transition()) { w -> w / 6 } + fadeIn(Springs.smooth(Spring.StiffnessMedium)),
+        exit = if (reduceMotion) ExitTransition.None else
+            slideOutHorizontally(Springs.transition()) { w -> w / 6 } + fadeOut(Springs.smooth(Spring.StiffnessHigh)),
+    ) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            GlossaryScreen(settings = settings, vm = settingsVm, onBack = { showGlossary = false })
         }
     }
 

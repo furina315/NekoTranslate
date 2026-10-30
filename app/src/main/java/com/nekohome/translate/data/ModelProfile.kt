@@ -80,13 +80,18 @@ data class ModelProfile(
     val sourceUrls: List<String> = emptyList(),
     val notes: String = "",
     val isCustom: Boolean = false,
+    /** Model was trained on the 【约束要求】 prompt (Index-Translate): glossary terms go in as hard constraints. */
+    val supportsConstraints: Boolean = false,
 ) {
     fun findLanguage(code: String): Language? =
         if (code == Language.AUTO_CODE) Language.AUTO else languages.firstOrNull { it.code == code }
 
     /** Builds the user message (before chat formatting). */
-    fun buildUserPrompt(source: Language, target: Language, text: String): String {
+    fun buildUserPrompt(source: Language, target: Language, text: String, terms: List<GlossaryEntry> = emptyList()): String {
         val trimmed = text.trim()
+        if (terms.isNotEmpty() && supportsConstraints && promptLocale == PromptLocale.ZH) {
+            return buildConstraintPrompt(source, target, trimmed, terms)
+        }
         val useEnglish = englishTemplate != null && !usesChinesePrompt(source, target, trimmed)
         val (template, locale) = when {
             useEnglish -> englishTemplate to PromptLocale.EN
@@ -94,10 +99,25 @@ data class ModelProfile(
             else -> promptTemplate to promptLocale
         }
         fun name(l: Language) = if (locale == PromptLocale.ZH) l.nameZh else l.nameEn
-        return template
+        val base = template
             .replace("{source_lang}", if (source.isAuto) "" else name(source))
             .replace("{target_lang}", name(target))
             .replace("{text}", trimmed)
+        if (terms.isEmpty()) return base
+        val pairs = terms.joinToString("；") { "${it.source} → ${it.target}" }
+        return if (locale == PromptLocale.EN) "$base\n\nUse these term translations strictly: $pairs"
+        else "$base\n\n请严格使用以下术语译法：$pairs"
+    }
+
+    /**
+     * Index-Translate's official constrained prompt (translate.py instTrans): source text plus a
+     * 【约束要求】 list with one 【硬性要求】专名/术语对照 line.
+     */
+    private fun buildConstraintPrompt(source: Language, target: Language, text: String, terms: List<GlossaryEntry>): String {
+        val head = if (source.isAuto) "请将以下文本翻译成${target.nameZh}" else "请将以下${source.nameZh}文本翻译成${target.nameZh}"
+        val pairs = terms.joinToString("、") { "${it.source}→${it.target}" }
+        return head + "，并且严格遵循所有约束要求。\n\n【源文】\n" + text +
+            "\n\n【约束要求】\n1. 【硬性要求】专名/术语对照: " + pairs + "\n\n只输出译文，不要有任何额外说明。"
     }
 
     /**

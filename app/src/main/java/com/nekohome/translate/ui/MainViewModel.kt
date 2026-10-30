@@ -12,6 +12,8 @@ import com.nekohome.translate.R
 import com.nekohome.translate.data.IncomingText
 import com.nekohome.translate.data.BuiltInProfiles
 import com.nekohome.translate.data.GpuGuard
+import com.nekohome.translate.data.GlossaryEntry
+import com.nekohome.translate.data.TranslationPlanner
 import com.nekohome.translate.data.HistoryEntry
 import com.nekohome.translate.data.HistoryRules
 import com.nekohome.translate.data.HistoryStore
@@ -87,6 +89,9 @@ enum class MessageAction { OPEN_TTS_SETTINGS }
  */
 @Immutable
 data class MainUiState(
+    /** 长文本分段翻译进度：第 segmentIndex / segmentCount 段（0 = 不在分段）。 */
+    val segmentIndex: Int = 0,
+    val segmentCount: Int = 0,
     val models: List<LocalModel> = emptyList(),
     /** Model whose parameters the 模型 tab is editing. */
     val selectedPath: String? = null,
@@ -181,6 +186,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Mirrors [com.nekohome.translate.data.AppSettings.historyEnabled]. */
     @Volatile
     private var historyEnabled = true
+    private var glossary: List<GlossaryEntry> = emptyList()
 
     /** Which text box is being read aloud by the system TTS, if any. */
     val speaking: StateFlow<SpeakTarget?> = speaker.speaking
@@ -257,6 +263,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             settingsRepository.settings.map { it.historyEnabled }.distinctUntilChanged().collect { historyEnabled = it }
+        }
+        viewModelScope.launch {
+            settingsRepository.settings.map { if (it.glossaryEnabled) it.glossary else emptyList() }
+                .distinctUntilChanged().collect { glossary = it }
         }
         refreshTtsEngines()
         viewModelScope.launch {
@@ -832,7 +842,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val budget = ImagePrep.imageTokenBudget(loaded.params.nCtx, sampling.maxTokens)
             engine.translateImage(profile, mmproj, budget, prompt, image, sampling)
         } else {
-            engine.translate(profile, profile.buildUserPrompt(st.sourceLanguage, st.targetLanguage, st.input), sampling)
+            val nCtx = st.loaded?.params?.nCtx ?: 0
+            val plan = TranslationPlanner.plan(
+                profile, st.sourceLanguage, st.targetLanguage, st.input, nCtx, sampling.maxTokens, glossary,
+            )
+            engine.translateSegments(profile, plan, sampling)
         }
         translateJob?.cancel()
         val queued = session.busy.value != null
@@ -853,6 +867,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         is GenerationEvent.Partial -> {
                             setOutput(ev.text)
+                            if (_state.value.segmentCount != ev.segmentCount || _state.value.segmentIndex != ev.segment) {
+                                _state.update { it.copy(segmentIndex = ev.segment, segmentCount = ev.segmentCount) }
+                            }
                             if (_state.value.imageStage != null) _state.update { it.copy(imageStage = null) }
                         }
                         is GenerationEvent.Done -> {
@@ -865,6 +882,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 it.copy(
                                     isTranslating = false,
                                     imageStage = null,
+                                    segmentIndex = 0, segmentCount = 0,
                                     message = ev.stats.errorMessage(),
                                     stats = GenStats(ev.stats.generatedTokens, ev.stats.tokensPerSecond, ev.stats.stopReason),
                                 )
@@ -876,7 +894,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (t is CancellationException) throw t
                 _state.update { it.copy(isTranslating = false, message = str(R.string.msg_translate_failed, t.message ?: "")) }
             } finally {
-                _state.update { it.copy(isTranslating = false, imageStage = null) }
+                _state.update { it.copy(isTranslating = false, imageStage = null, segmentIndex = 0, segmentCount = 0) }
             }
         }
     }

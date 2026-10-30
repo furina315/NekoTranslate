@@ -228,6 +228,8 @@ fun TranslateScreen(
                         imageStage = state.imageStage,
                         imageStageSinceMs = state.imageStageSinceMs,
                         imageStageBackend = state.imageStageBackend,
+                        segment = state.segmentIndex,
+                        segmentCount = state.segmentCount,
                         output = outputProvider,
                         stats = state.stats,
                         showStats = showStats,
@@ -691,6 +693,8 @@ private fun OutputCard(
     imageStage: ImageStage?,
     imageStageSinceMs: Long,
     imageStageBackend: String?,
+    segment: Int,
+    segmentCount: Int,
     output: () -> String,
     stats: com.nekohome.translate.ui.GenStats?,
     showStats: Boolean,
@@ -732,7 +736,9 @@ private fun OutputCard(
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 48.dp)) {
                 Text(
-                    text = if (showStats && stats != null) statsLabel(stats) else "",
+                    text = if (isTranslating && segmentCount > 1) {
+                        stringResource(R.string.translate_segment_progress, segment, segmentCount)
+                    } else if (showStats && stats != null) statsLabel(stats) else "",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f),
                     modifier = Modifier.weight(1f),

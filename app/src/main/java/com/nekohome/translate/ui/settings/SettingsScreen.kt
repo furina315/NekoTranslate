@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Memory
@@ -83,7 +84,12 @@ import com.nekohome.translate.ui.tts.ttsEngineSummary
 private enum class SettingsDialog { THEME, TARGET, TTS_ENGINE }
 
 @Composable
-fun SettingsScreen(settings: AppSettings, vm: SettingsViewModel, ttsEngines: TtsEngineList?) {
+fun SettingsScreen(
+    settings: AppSettings,
+    vm: SettingsViewModel,
+    ttsEngines: TtsEngineList?,
+    onOpenGlossary: () -> Unit,
+) {
     val context = LocalContext.current
     var dialog by rememberSaveable { mutableStateOf<SettingsDialog?>(null) }
     val dynamicSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
@@ -159,6 +165,15 @@ fun SettingsScreen(settings: AppSettings, vm: SettingsViewModel, ttsEngines: Tts
                 summary = stringResource(R.string.settings_history_desc),
                 checked = settings.historyEnabled,
                 onCheckedChange = vm::setHistoryEnabled,
+            )
+
+            SettingItem(
+                icon = Icons.Outlined.MenuBook,
+                title = stringResource(R.string.settings_glossary),
+                summary = if (settings.glossary.isEmpty()) stringResource(R.string.settings_glossary_desc)
+                else if (settings.glossaryEnabled) stringResource(R.string.settings_glossary_count, settings.glossary.size)
+                else stringResource(R.string.settings_glossary_off),
+                onClick = onOpenGlossary,
             )
 
             SectionHeader(stringResource(R.string.settings_section_tts))

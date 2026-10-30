@@ -19,6 +19,7 @@ import com.nekohome.translate.data.ModelProfile
 import com.nekohome.translate.data.ModelRepository
 import com.nekohome.translate.data.QuickRequest
 import com.nekohome.translate.data.SettingsRepository
+import com.nekohome.translate.data.TranslationPlanner
 import com.nekohome.translate.engine.AutoLoadDecision
 import com.nekohome.translate.engine.AutoLoadPolicy
 import com.nekohome.translate.engine.GenerationEvent
@@ -212,7 +213,13 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
         val st = _state.value
         val source = LanguageRules.resolveSource(profile, Language.AUTO_CODE)
         val target = LanguageRules.resolveTarget(profile, st.targetCode)
-        val events = session.engine.translate(profile, profile.buildUserPrompt(source, target, st.source), sampling)
+        val settingsNow = settingsRepository.settings.first()
+        val glossary = if (settingsNow.glossaryEnabled) settingsNow.glossary else emptyList()
+        val plan = TranslationPlanner.plan(
+            profile, source, target, st.source,
+            session.engine.loaded?.params?.nCtx ?: 0, sampling.maxTokens, glossary,
+        )
+        val events = session.engine.translateSegments(profile, plan, sampling)
         val queued = session.busy.value != null
         _state.update { it.copy(phase = if (queued) QuickPhase.QUEUED else QuickPhase.TRANSLATING) }
         session.serialized(owner, events).throttleLatest(OUTPUT_FRAME_MS).collect { ev ->

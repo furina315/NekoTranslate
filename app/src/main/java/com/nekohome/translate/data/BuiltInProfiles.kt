@@ -96,6 +96,7 @@ object BuiltInProfiles {
             "https://github.com/bilibili/Index-Translate/blob/main/inference/llm/translate.py",
             "https://github.com/bilibili/Index-Translate/blob/main/docs/image_translate.md",
         ),
+        supportsConstraints = true,
         notes = "Thinking disabled (empty <think></think> block). Any emitted <think> block is stripped.",
     )
 

@@ -35,6 +35,9 @@ data class AppSettings(
     val chineseVoiceHintDismissed: Boolean = false,
     /** Save finished text translations to 翻译历史. */
     val historyEnabled: Boolean = true,
+    /** 术语表总开关与条目（全局一份）。 */
+    val glossaryEnabled: Boolean = true,
+    val glossary: List<GlossaryEntry> = emptyList(),
 )
 
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
@@ -57,6 +60,8 @@ class SettingsRepository internal constructor(private val store: DataStore<Prefe
                 ttsEngine = p[TTS_ENGINE] ?: d.ttsEngine,
                 chineseVoiceHintDismissed = p[ZH_VOICE_HINT_DISMISSED] ?: d.chineseVoiceHintDismissed,
                 historyEnabled = p[HISTORY_ENABLED] ?: d.historyEnabled,
+                glossaryEnabled = p[GLOSSARY_ENABLED] ?: d.glossaryEnabled,
+                glossary = GlossaryRules.parse(p[GLOSSARY]),
             )
         }
 
@@ -72,7 +77,13 @@ class SettingsRepository internal constructor(private val store: DataStore<Prefe
 
     suspend fun setHistoryEnabled(on: Boolean) = store.edit { it[HISTORY_ENABLED] = on }
 
+    suspend fun setGlossaryEnabled(on: Boolean) = store.edit { it[GLOSSARY_ENABLED] = on }
+    suspend fun setGlossary(entries: List<GlossaryEntry>) =
+        store.edit { it[GLOSSARY] = GlossaryRules.serialize(entries) }
+
     private companion object {
+        val GLOSSARY_ENABLED = booleanPreferencesKey("glossary_enabled")
+        val GLOSSARY = stringPreferencesKey("glossary")
         val THEME = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val THEME_SEED = stringPreferencesKey("theme_seed")
