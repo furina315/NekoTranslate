@@ -76,6 +76,24 @@ class Speaker(
     /** The box being read (or about to be, while the engine starts), else null. */
     val speaking: StateFlow<SpeakTarget?> = _speaking.asStateFlow()
 
+    private val _highlight = MutableStateFlow<SpeakHighlight?>(null)
+
+    /** Sentence (and, for engines reporting ranges, word) being read; null when idle. */
+    val highlight: StateFlow<SpeakHighlight?> = _highlight.asStateFlow()
+
+    @Volatile private var rate = 1f
+    @Volatile private var pitch = 1f
+
+    /** Speech rate / pitch for the next request (see [SpeechPlan.RATE_STOPS]). */
+    fun setTuning(rate: Float, pitch: Float) {
+        this.rate = rate
+        this.pitch = pitch
+    }
+
+    /** Spans of the session being read, and whether the engine reports word ranges. */
+    @Volatile private var spans: List<SpeechSpan> = emptyList()
+    @Volatile private var spanTarget = SpeakTarget.OUTPUT
+
     private class Request(val target: SpeakTarget, val text: String, val code: String)
 
     private var tts: TextToSpeech? = null
@@ -113,6 +131,7 @@ class Speaker(
         main.removeCallbacks(initTicker)
         if (gate.state == TtsInitGate.State.READY) runCatching { tts?.stop() }
         _speaking.value = null
+        _highlight.value = null
     }
 
     /**
@@ -279,12 +298,19 @@ class Speaker(
     private fun start(engine: TextToSpeech, request: Request) {
         if (!chooseVoice(engine, request)) return
         val maxLen = minOf(TextToSpeech.getMaxSpeechInputLength(), MAX_CHUNK)
-        val chunks = TtsLocales.chunk(request.text, maxLen)
+        val sentences = SpeechPlan.split(request.text, maxLen)
+        val chunks = sentences.map { request.text.substring(it.start, it.end) }
         if (chunks.isEmpty()) {
             _speaking.value = null
             return
         }
         val sid = ++session
+        spans = sentences
+        spanTarget = request.target
+        runCatching {
+            engine.setSpeechRate(rate)
+            engine.setPitch(pitch)
+        }
         _speaking.value = request.target
         val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1f) }
         chunks.forEachIndexed { i, chunk ->
@@ -312,12 +338,23 @@ class Speaker(
         override fun onStart(utteranceId: String?) {
             val (sid) = parse(utteranceId) ?: return
             startedSession = sid
+            val i = parse(utteranceId)?.get(1) ?: return
+            val sp = spans.getOrNull(i) ?: return
+            if (sid == session) _highlight.value = SpeakHighlight(spanTarget, sp)
+        }
+
+        override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+            val (sid, i) = parse(utteranceId) ?: return
+            if (sid != session) return
+            val sp = spans.getOrNull(i) ?: return
+            val word = SpeechPlan.wordSpan(sp, start, end) ?: return
+            _highlight.value = SpeakHighlight(spanTarget, sp, word)
         }
 
         override fun onDone(utteranceId: String?) {
             val (sid, index, count) = parse(utteranceId) ?: return
             if (sid != session || index != count - 1) return
-            main.post { if (sid == session) _speaking.value = null }
+            main.post { if (sid == session) { _speaking.value = null; _highlight.value = null } }
         }
 
         @Deprecated("Deprecated in Java")

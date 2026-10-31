@@ -2,6 +2,13 @@
 
 package com.nekohome.translate.ui.translate
 
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
+import com.nekohome.translate.tts.SpeakHighlight
 import android.os.SystemClock
 import com.nekohome.translate.engine.ImageStage
 import kotlinx.coroutines.delay
@@ -160,6 +167,7 @@ fun TranslateScreen(
         val outputProvider = remember(output) { { output.value } }
         val imagePicker = rememberImagePicker(vm)
         val speaking by vm.speaking.collectAsStateWithLifecycle()
+        val highlight by vm.highlight.collectAsStateWithLifecycle()
         if (state.loaded == null) {
             NoModelState(
                 state = state,
@@ -207,6 +215,7 @@ fun TranslateScreen(
                     onGallery = imagePicker.gallery,
                     onClearImage = vm::clearImage,
                     speaking = speaking == SpeakTarget.SOURCE,
+                    highlight = highlight?.takeIf { it.target == SpeakTarget.SOURCE },
                     onSpeak = vm::toggleSpeakInput,
                 )
                 val reduceMotion = LocalReduceMotion.current
@@ -234,6 +243,7 @@ fun TranslateScreen(
                         stats = state.stats,
                         showStats = showStats,
                         speaking = speaking == SpeakTarget.OUTPUT,
+                        highlight = highlight?.takeIf { it.target == SpeakTarget.OUTPUT },
                         onSpeak = vm::toggleSpeakOutput,
                     )
                 }
@@ -469,6 +479,7 @@ private fun InputCard(
     onGallery: () -> Unit,
     onClearImage: () -> Unit,
     speaking: Boolean,
+    highlight: SpeakHighlight?,
     onSpeak: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -504,6 +515,7 @@ private fun InputCard(
                     onValueChange = onInput,
                     placeholder = { Text(stringResource(R.string.translate_input_hint)) },
                     textStyle = MaterialTheme.typography.titleMedium,
+                    visualTransformation = speakHighlightTransformation(highlight, MaterialTheme.colorScheme.primaryContainer),
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 140.dp),
@@ -699,6 +711,7 @@ private fun OutputCard(
     stats: com.nekohome.translate.ui.GenStats?,
     showStats: Boolean,
     speaking: Boolean,
+    highlight: SpeakHighlight?,
     onSpeak: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -729,9 +742,9 @@ private fun OutputCard(
                 // No SelectionContainer while streaming: selection state would be rebuilt on
                 // every update. Text becomes selectable as soon as the translation finishes.
                 if (isTranslating) {
-                    StreamingText(output, Modifier.padding(end = 12.dp))
+                    StreamingText(output, Modifier.padding(end = 12.dp), highlight = null)
                 } else {
-                    SelectionContainer(Modifier.padding(end = 12.dp)) { StreamingText(output) }
+                    SelectionContainer(Modifier.padding(end = 12.dp)) { StreamingText(output, highlight = highlight) }
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 48.dp)) {
@@ -881,9 +894,12 @@ private fun StageLabel(stage: ImageStage, sinceMs: Long, backend: String?) {
 
 /** The only composable that reads the streamed text, so a token update recomposes just this. */
 @Composable
-private fun StreamingText(text: () -> String, modifier: Modifier = Modifier) {
+private fun StreamingText(text: () -> String, modifier: Modifier = Modifier, highlight: SpeakHighlight? = null) {
+    val hl = MaterialTheme.colorScheme.tertiaryContainer
+    val hlWord = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)
+    val t = text()
     Text(
-        text(),
+        if (highlight == null) AnnotatedString(t) else highlightedText(t, highlight, hl, hlWord),
         style = MaterialTheme.typography.titleMedium,
         color = MaterialTheme.colorScheme.onSecondaryContainer,
         modifier = modifier,
@@ -921,3 +937,23 @@ private fun pasteText(context: Context): String? =
         ?.coerceToText(context)
         ?.toString()
         ?.takeIf { it.isNotEmpty() }
+
+
+private fun highlightedText(text: String, h: SpeakHighlight, sentence: Color, word: Color): AnnotatedString =
+    buildAnnotatedString {
+        append(text)
+        val s = h.sentence
+        if (s.start in 0 until s.end && s.end <= text.length) addStyle(SpanStyle(background = sentence), s.start, s.end)
+        h.word?.takeIf { it.end <= text.length }?.let { addStyle(SpanStyle(background = word), it.start, it.end) }
+    }
+
+/** Marks the sentence (and word) being read in the editable source field; text and offsets are unchanged. */
+@Composable
+private fun speakHighlightTransformation(h: SpeakHighlight?, color: Color): VisualTransformation {
+    val word = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)
+    return remember(h, color, word) {
+        if (h == null) VisualTransformation.None else VisualTransformation { text ->
+            TransformedText(highlightedText(text.text, h, color, word), OffsetMapping.Identity)
+        }
+    }
+}

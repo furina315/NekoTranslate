@@ -107,7 +107,9 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(source = request.text, replaceable = request.replaceable) }
         viewModelScope.launch {
             val list = withContext(Dispatchers.IO) { queryTtsEngines(getApplication()) }
-            val saved = settingsRepository.settings.first().ttsEngine
+            val st = settingsRepository.settings.first()
+            speaker.setTuning(st.ttsRate, st.ttsPitch)
+            val saved = st.ttsEngine
             val pkg = TtsEngineChoice.resolve(saved, list.engines)
             ttsEnginePackage = pkg
             speaker.setEngine(pkg, TtsEngineChoice.bindingKey(pkg, list.systemDefault))

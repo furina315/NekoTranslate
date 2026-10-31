@@ -53,6 +53,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { repository.setGlossary(list) }
     }
 
+    fun setTtsRate(v: Float) { viewModelScope.launch { repository.setTtsRate(v) } }
+    fun setTtsPitch(v: Float) { viewModelScope.launch { repository.setTtsPitch(v) } }
     fun setTtsEngine(packageName: String) { viewModelScope.launch { repository.setTtsEngine(packageName) } }
     fun setChineseVoiceHintDismissed(dismissed: Boolean) {
         viewModelScope.launch { repository.setChineseVoiceHintDismissed(dismissed) }

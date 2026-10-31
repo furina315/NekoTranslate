@@ -215,6 +215,13 @@
     <string name="settings_tts_engine_default_named">跟随系统默认（%1$s）</string>
     <string name="settings_tts_engine_missing">已选引擎未安装，暂用系统默认</string>
     <string name="settings_tts_engine_none">未找到朗读引擎</string>
+    <string name="settings_tts_tune">语速与音调</string>
+    <string name="settings_tts_tune_summary">语速 %1$s× · 音调 %2$s×</string>
+    <string name="tts_tune_rate">语速</string>
+    <string name="tts_tune_pitch">音调</string>
+    <string name="tts_tune_pitch_unsupported">该引擎不支持音调</string>
+    <string name="tts_tune_reset">恢复默认</string>
+    <string name="tts_tune_done">完成</string>
     <string name="settings_tts_system">系统 TTS 设置</string>
     <string name="settings_tts_system_desc">首选引擎、语速、语音数据</string>
     <string name="settings_tts_zh_hint">中文语音安装提示</string>

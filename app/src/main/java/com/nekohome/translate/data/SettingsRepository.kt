@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -31,6 +32,9 @@ data class AppSettings(
     val showStats: Boolean = true,
     /** TTS engine package for 朗读; empty = 跟随系统默认. */
     val ttsEngine: String = "",
+    /** 朗读语速 / 音调（1.0 = 正常）。 */
+    val ttsRate: Float = 1f,
+    val ttsPitch: Float = 1f,
     /** 「不再提示」 on the missing-Chinese-voice sheet. */
     val chineseVoiceHintDismissed: Boolean = false,
     /** Save finished text translations to 翻译历史. */
@@ -58,6 +62,8 @@ class SettingsRepository internal constructor(private val store: DataStore<Prefe
                 keepScreenOn = p[KEEP_SCREEN_ON] ?: d.keepScreenOn,
                 showStats = p[SHOW_STATS] ?: d.showStats,
                 ttsEngine = p[TTS_ENGINE] ?: d.ttsEngine,
+                ttsRate = p[TTS_RATE] ?: d.ttsRate,
+                ttsPitch = p[TTS_PITCH] ?: d.ttsPitch,
                 chineseVoiceHintDismissed = p[ZH_VOICE_HINT_DISMISSED] ?: d.chineseVoiceHintDismissed,
                 historyEnabled = p[HISTORY_ENABLED] ?: d.historyEnabled,
                 glossaryEnabled = p[GLOSSARY_ENABLED] ?: d.glossaryEnabled,
@@ -72,6 +78,8 @@ class SettingsRepository internal constructor(private val store: DataStore<Prefe
     suspend fun setKeepScreenOn(on: Boolean) = store.edit { it[KEEP_SCREEN_ON] = on }
     suspend fun setShowStats(on: Boolean) = store.edit { it[SHOW_STATS] = on }
     suspend fun setTtsEngine(packageName: String) = store.edit { it[TTS_ENGINE] = packageName }
+    suspend fun setTtsRate(v: Float) = store.edit { it[TTS_RATE] = v }
+    suspend fun setTtsPitch(v: Float) = store.edit { it[TTS_PITCH] = v }
     suspend fun setChineseVoiceHintDismissed(dismissed: Boolean) =
         store.edit { it[ZH_VOICE_HINT_DISMISSED] = dismissed }
 
@@ -90,6 +98,8 @@ class SettingsRepository internal constructor(private val store: DataStore<Prefe
         val DEFAULT_TARGET = stringPreferencesKey("default_target")
         val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         val SHOW_STATS = booleanPreferencesKey("show_stats")
+        val TTS_RATE = floatPreferencesKey("tts_rate")
+        val TTS_PITCH = floatPreferencesKey("tts_pitch")
         val TTS_ENGINE = stringPreferencesKey("tts_engine")
         val HISTORY_ENABLED = booleanPreferencesKey("history_enabled")
         val ZH_VOICE_HINT_DISMISSED = booleanPreferencesKey("zh_voice_hint_dismissed")

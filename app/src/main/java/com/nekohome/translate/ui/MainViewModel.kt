@@ -190,6 +190,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Which text box is being read aloud by the system TTS, if any. */
     val speaking: StateFlow<SpeakTarget?> = speaker.speaking
+    val highlight: StateFlow<com.nekohome.translate.tts.SpeakHighlight?> = speaker.highlight
 
     /** Installed TTS engines (null until the first query); re-queried on every resume. */
     private val _ttsEngines = MutableStateFlow<TtsEngineList?>(null)
@@ -269,6 +270,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .distinctUntilChanged().collect { glossary = it }
         }
         refreshTtsEngines()
+        viewModelScope.launch {
+            settingsRepository.settings.map { it.ttsRate to it.ttsPitch }.distinctUntilChanged()
+                .collect { (r, p) -> speaker.setTuning(r, p) }
+        }
         viewModelScope.launch {
             // Bind the chosen engine; an uninstalled choice falls back to the system default, and
             // a changed system default rebinds while following it.

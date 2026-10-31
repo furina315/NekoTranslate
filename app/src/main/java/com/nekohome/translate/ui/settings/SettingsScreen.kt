@@ -79,9 +79,14 @@ import com.nekohome.translate.ui.motion.Springs
 import com.nekohome.translate.tts.TtsEngineList
 import com.nekohome.translate.tts.openSystemTtsSettings
 import com.nekohome.translate.ui.tts.TtsEngineDialog
+import com.nekohome.translate.ui.tts.TtsTuneDialog
+import com.nekohome.translate.ui.tts.rateLabel
 import com.nekohome.translate.ui.tts.ttsEngineSummary
+import com.nekohome.translate.tts.SpeechPlan
+import com.nekohome.translate.tts.TtsEngineChoice
+import androidx.compose.material.icons.outlined.Speed
 
-private enum class SettingsDialog { THEME, TARGET, TTS_ENGINE }
+private enum class SettingsDialog { THEME, TARGET, TTS_ENGINE, TTS_TUNE }
 
 @Composable
 fun SettingsScreen(
@@ -184,6 +189,12 @@ fun SettingsScreen(
                 onClick = { dialog = SettingsDialog.TTS_ENGINE },
             )
             SettingItem(
+                icon = Icons.Outlined.Speed,
+                title = stringResource(R.string.settings_tts_tune),
+                summary = stringResource(R.string.settings_tts_tune_summary, rateLabel(settings.ttsRate), rateLabel(settings.ttsPitch)),
+                onClick = { dialog = SettingsDialog.TTS_TUNE },
+            )
+            SettingItem(
                 icon = Icons.Outlined.SettingsVoice,
                 title = stringResource(R.string.settings_tts_system),
                 summary = stringResource(R.string.settings_tts_system_desc),
@@ -262,6 +273,16 @@ fun SettingsScreen(
             list = ttsEngines,
             selected = settings.ttsEngine,
             onSelect = vm::setTtsEngine,
+            onDismiss = { dialog = null },
+        )
+        SettingsDialog.TTS_TUNE -> TtsTuneDialog(
+            rate = settings.ttsRate,
+            pitch = settings.ttsPitch,
+            pitchSupported = SpeechPlan.pitchSupported(
+                TtsEngineChoice.resolve(settings.ttsEngine, ttsEngines?.engines) ?: ttsEngines?.systemDefault,
+            ),
+            onRate = vm::setTtsRate,
+            onPitch = vm::setTtsPitch,
             onDismiss = { dialog = null },
         )
         null -> Unit
