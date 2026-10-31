@@ -248,12 +248,16 @@ class TranslationEngine(context: Context) {
         val prompt = formatPrompt(s, profile.chatFormat, userPrompt)
         val raw = StringBuilder()
         val cleaner = OutputCleaner(profile.stopStrings)
-        val stats = s.generate(prompt, sampling) { piece ->
+        var stopHit = false
+        var open = true
+        val genStats = s.generate(prompt, sampling) { piece ->
             raw.append(piece)
             val cleaned = cleaner.clean(raw)
-            val open = !trySend(GenerationEvent.Partial(cleaned.text)).isClosed
+            stopHit = cleaned.hitStop
+            open = !trySend(GenerationEvent.Partial(cleaned.text)).isClosed
             !cleaned.hitStop && open && !cancelRequested
         }
+        val stats = SegmentStats.afterGeneration(genStats, stopHit, userCancelled = cancelRequested || !open)
         logResult("text", stats)
         val finalText = cleaner.clean(raw).text
         send(GenerationEvent.Done(finalText, stats))
@@ -285,12 +289,16 @@ class TranslationEngine(context: Context) {
             val prompt = formatPrompt(s, profile.chatFormat, seg.prompt)
             val raw = StringBuilder()
             val cleaner = OutputCleaner(profile.stopStrings)
-            val st = s.generate(prompt, sampling) { piece ->
+            var stopHit = false
+            val genStats = s.generate(prompt, sampling) { piece ->
                 raw.append(piece)
                 val cleaned = cleaner.clean(raw)
+                stopHit = cleaned.hitStop
                 closed = trySend(GenerationEvent.Partial(prefix, cleaned.text, idx + 1, total)).isClosed
                 !cleaned.hitStop && !closed && !cancelRequested
             }
+            // A stop string ends this segment only; the next segment still runs.
+            val st = SegmentStats.afterGeneration(genStats, stopHit, userCancelled = cancelRequested || closed)
             stats.add(st)
             done.append(cleaner.clean(raw).text)
             if (st.stopReason == StopReason.CANCELLED || st.stopReason == StopReason.ERROR || !st.ok) break
@@ -337,6 +345,8 @@ class TranslationEngine(context: Context) {
         val raw = StringBuilder()
         val cleaner = OutputCleaner(profile.stopStrings)
         var firstTokenLogged = false
+        var stopHit = false
+        var open = true
         val onStage = StageListener { st ->
             when (st) {
                 StageListener.STAGE_ENCODE -> stage(ImageStage.ENCODING)
@@ -352,9 +362,10 @@ class TranslationEngine(context: Context) {
             }
             raw.append(piece)
             val cleaned = cleaner.clean(raw)
-            val open = !trySend(GenerationEvent.Partial(cleaned.text)).isClosed
+            stopHit = cleaned.hitStop
+            open = !trySend(GenerationEvent.Partial(cleaned.text)).isClosed
             !cleaned.hitStop && open && !cancelRequested
-        }
+        }.let { SegmentStats.afterGeneration(it, stopHit, userCancelled = cancelRequested || !open) }
         logResult("image", stats)
         val finalText = cleaner.clean(raw).text
         send(GenerationEvent.Done(finalText, stats))

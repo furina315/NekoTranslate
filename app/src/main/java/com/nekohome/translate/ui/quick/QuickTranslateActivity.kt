@@ -19,7 +19,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nekohome.translate.MainActivity
 import com.nekohome.translate.R
+import com.nekohome.translate.data.HandoffPayload
 import com.nekohome.translate.data.IncomingText
+import com.nekohome.translate.data.TextHandoff
+import com.nekohome.translate.diag.AppLog
 import com.nekohome.translate.data.ThemeMode
 import com.nekohome.translate.ui.settings.SettingsViewModel
 import com.nekohome.translate.ui.theme.NekoTranslateTheme
@@ -48,6 +51,8 @@ class QuickTranslateActivity : ComponentActivity() {
             readOnly = intent?.getBooleanExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, false) ?: false,
             forResult = callingActivity != null,
         )
+        // Lengths only (never the text): tells a cut by the source app apart from one of ours.
+        request?.let { AppLog.i(TAG, "incoming ${intent?.action}: ${it.originalLength} chars, kept ${it.text.length}") }
         if (request == null) {
             Toast.makeText(this, R.string.quick_empty, Toast.LENGTH_SHORT).show()
             finishQuietly()
@@ -88,14 +93,23 @@ class QuickTranslateActivity : ComponentActivity() {
         return true
     }
 
-    private fun openInApp(source: String, translation: String?, targetCode: String?) {
+    /**
+     * 「在 App 中打开」: the text is handed over in-process ([TextHandoff]) and only its id goes in
+     * the Intent, so a long source + translation never hits the Binder transaction limit. Short
+     * texts also travel inline as a fallback.
+     */
+    private fun openInApp(source: String, translation: String?, targetCode: String?, originalLength: Int) {
         vm.dismiss()
+        val payload = HandoffPayload(source, translation, targetCode, originalLength)
         val intent = Intent(this, MainActivity::class.java)
             .setAction(MainActivity.ACTION_TRANSLATE_TEXT)
-            .putExtra(Intent.EXTRA_TEXT, source)
-            .putExtra(MainActivity.EXTRA_TRANSLATION, translation)
+            .putExtra(MainActivity.EXTRA_HANDOFF_ID, TextHandoff.put(payload))
             .putExtra(MainActivity.EXTRA_TARGET, targetCode)
+            .putExtra(MainActivity.EXTRA_ORIGINAL_LENGTH, originalLength)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (TextHandoff.inlineFits(payload)) {
+            intent.putExtra(Intent.EXTRA_TEXT, source).putExtra(MainActivity.EXTRA_TRANSLATION, translation)
+        }
         startActivity(intent)
         finishQuietly()
     }
@@ -109,5 +123,9 @@ class QuickTranslateActivity : ComponentActivity() {
         } else {
             @Suppress("DEPRECATION") overridePendingTransition(0, 0)
         }
+    }
+
+    private companion object {
+        const val TAG = "NekoQuick"
     }
 }

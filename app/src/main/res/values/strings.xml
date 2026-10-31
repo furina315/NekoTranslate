@@ -123,6 +123,8 @@
     <string name="msg_mmproj_no_model">%1$s 是视觉组件（mmproj），但没找到对应的模型。请先导入模型，再在模型卡片上点「关联 mmproj」。</string>
     <string name="msg_mmproj_removed">已移除视觉组件</string>
     <string name="msg_incoming_need_model">已填入文字，请先加载模型后翻译</string>
+    <string name="msg_incoming_truncated">原文共 %1$d 字，超过单次上限，只填入了前 %2$d 字</string>
+    <string name="msg_incoming_lost">原文没能带过来（App 刚被系统重启），请回到原来的 App 重新选择文字</string>
     <string name="msg_incoming_no_image">当前模型没有开启图片翻译，无法翻译分享的图片</string>
     <string name="msg_image_failed">无法读取图片：%1$s</string>
     <string name="msg_gpu_passed">GPU 自检通过，重新加载模型后生效</string>
@@ -207,6 +209,8 @@
     <string name="quick_load_failed">模型加载失败：%1$s</string>
     <string name="quick_translate_failed">翻译失败：%1$s</string>
     <string name="quick_empty">没有收到可翻译的文字</string>
+    <string name="quick_source_length">原文 · %1$d 字</string>
+    <string name="quick_truncated">原文共 %1$d 字，超过单次上限，只翻译前 %2$d 字</string>
     <string name="quick_model_line">%1$s · 本地离线</string>
     <string name="settings_section_tts">朗读</string>
     <string name="settings_tts_engine">朗读引擎</string>

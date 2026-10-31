@@ -102,7 +102,7 @@ fun QuickTranslateScreen(
     onClosed: () -> Unit,
     onCopy: (String) -> Unit,
     onReplace: (String) -> Boolean,
-    onOpenApp: (source: String, translation: String?, targetCode: String?) -> Unit,
+    onOpenApp: (source: String, translation: String?, targetCode: String?, originalLength: Int) -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val output by vm.output.collectAsStateWithLifecycle()
@@ -184,7 +184,7 @@ fun QuickTranslateScreen(
                     onSpeak = vm::toggleSpeak,
                     onReplace = { if (onReplace(output)) dismiss() },
                     onOpenApp = {
-                        onOpenApp(state.source, output.takeIf { state.phase == QuickPhase.DONE }, state.targetCode)
+                        onOpenApp(state.source, output.takeIf { state.phase == QuickPhase.DONE }, state.targetCode, state.originalLength)
                     },
                 )
             }
@@ -257,7 +257,8 @@ private fun QuickCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        stringResource(R.string.quick_source),
+                        // The length makes a cut visible at a glance (collapsed, only 2 lines show).
+                        stringResource(R.string.quick_source_length, state.source.length),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
@@ -281,6 +282,14 @@ private fun QuickCard(
                     }
                 } else {
                     Text(state.source, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                if (state.truncated) {
+                    Text(
+                        stringResource(R.string.quick_truncated, state.originalLength, state.source.length),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
             }
         }
@@ -327,6 +336,14 @@ private fun QuickCard(
                     }
                 }
             }
+        }
+        if (state.phase == QuickPhase.TRANSLATING && state.segmentCount > 1 && output.isNotEmpty()) {
+            Text(
+                stringResource(R.string.translate_segment_progress, state.segment, state.segmentCount),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
         }
         state.message?.takeIf { output.isNotEmpty() || state.phase == QuickPhase.DONE }?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.padding(bottom = 4.dp))
@@ -409,7 +426,9 @@ private fun StatusBlock(state: QuickUiState) {
         QuickPhase.WAITING_FOR_LOAD -> stringResource(R.string.quick_waiting_model, state.loadSeconds)
         QuickPhase.LOADING_MODEL -> stringResource(R.string.quick_loading_model, state.modelName.orEmpty(), state.loadSeconds)
         QuickPhase.QUEUED -> stringResource(R.string.quick_queued)
-        QuickPhase.TRANSLATING -> stringResource(R.string.quick_translating)
+        QuickPhase.TRANSLATING ->
+            if (state.segmentCount > 1) stringResource(R.string.translate_segment_progress, state.segment, state.segmentCount)
+            else stringResource(R.string.quick_translating)
         QuickPhase.DONE -> state.message.orEmpty()
         QuickPhase.NO_MODEL, QuickPhase.FAILED -> state.message.orEmpty()
     }

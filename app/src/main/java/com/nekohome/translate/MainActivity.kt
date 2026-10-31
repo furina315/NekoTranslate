@@ -15,6 +15,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nekohome.translate.data.TextHandoff
 import com.nekohome.translate.data.ThemeMode
 import com.nekohome.translate.ui.AppRoot
 import com.nekohome.translate.ui.MainViewModel
@@ -68,11 +69,21 @@ class MainActivity : ComponentActivity() {
         intent ?: return
         val vm = viewModels<MainViewModel>().value
         when (intent.action) {
-            ACTION_TRANSLATE_TEXT -> vm.receiveText(
-                intent.getStringExtra(Intent.EXTRA_TEXT),
-                translated = intent.getStringExtra(EXTRA_TRANSLATION),
-                targetCode = intent.getStringExtra(EXTRA_TARGET),
-            )
+            ACTION_TRANSLATE_TEXT -> {
+                // Long texts come through the in-process hand-off; inline extras are the fallback.
+                val p = TextHandoff.take(intent.getLongExtra(EXTRA_HANDOFF_ID, 0L))
+                val source = p?.source ?: intent.getStringExtra(Intent.EXTRA_TEXT)
+                if (source == null) {
+                    vm.handoffLost()
+                } else {
+                    vm.receiveText(
+                        source,
+                        translated = if (p != null) p.translation else intent.getStringExtra(EXTRA_TRANSLATION),
+                        targetCode = p?.targetCode ?: intent.getStringExtra(EXTRA_TARGET),
+                        originalLength = p?.originalLength ?: intent.getIntExtra(EXTRA_ORIGINAL_LENGTH, 0),
+                    )
+                }
+            }
             Intent.ACTION_PROCESS_TEXT ->
                 vm.receiveText(intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString())
             Intent.ACTION_SEND -> {
@@ -94,10 +105,14 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        /** From the quick-translate card: EXTRA_TEXT = source, [EXTRA_TRANSLATION] / [EXTRA_TARGET] optional. */
+        /** From the quick-translate card: [EXTRA_HANDOFF_ID] (+ inline EXTRA_TEXT / [EXTRA_TRANSLATION] for short texts), [EXTRA_TARGET]. */
         const val ACTION_TRANSLATE_TEXT = "com.nekohome.translate.action.TRANSLATE_TEXT"
         const val EXTRA_TRANSLATION = "com.nekohome.translate.extra.TRANSLATION"
         const val EXTRA_TARGET = "com.nekohome.translate.extra.TARGET"
+        /** Id of a [TextHandoff] payload (source + translation kept in-process). */
+        const val EXTRA_HANDOFF_ID = "com.nekohome.translate.extra.HANDOFF_ID"
+        /** Length of the text the card received (larger than the source when it was cut). */
+        const val EXTRA_ORIGINAL_LENGTH = "com.nekohome.translate.extra.ORIGINAL_LENGTH"
 
         // Same scrims androidx.activity uses by default for 3-button navigation.
         private val LIGHT_SCRIM = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)

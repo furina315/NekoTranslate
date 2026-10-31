@@ -721,8 +721,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * translate when a model is ready. A [translated] result from the card is shown as is (with
      * its [targetCode]) instead of translating again.
      */
-    fun receiveText(raw: String?, translated: String? = null, targetCode: String? = null) {
-        val text = IncomingText.clean(raw) ?: return
+    fun receiveText(raw: String?, translated: String? = null, targetCode: String? = null, originalLength: Int = 0) {
+        val cleaned = IncomingText.cleanDetailed(raw) ?: return
+        val text = cleaned.text
+        // The card may already have cut it; report the length it originally received.
+        val arrived = maxOf(cleaned.originalLength, originalLength)
         if (_state.value.isTranslating) stop()
         translateJob?.cancel()
         stopSpeaking()
@@ -744,6 +747,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.value.isLoading -> Unit // the shared model is loading; the user taps 翻译 when it is ready
             else -> _state.update { it.copy(message = str(R.string.msg_incoming_need_model)) }
         }
+        if (arrived > text.length) {
+            val cut = str(R.string.msg_incoming_truncated, arrived, text.length)
+            _state.update { it.copy(message = it.message?.let { m -> "$cut\n$m" } ?: cut) }
+        }
+    }
+
+    /** 「在 App 中打开」 whose text could not be recovered (the process was restarted in between). */
+    fun handoffLost() {
+        _state.update { it.copy(message = str(R.string.msg_incoming_lost), incomingSeq = it.incomingSeq + 1) }
     }
 
     /** A shared image: translate it when the model supports images, else say why not. */

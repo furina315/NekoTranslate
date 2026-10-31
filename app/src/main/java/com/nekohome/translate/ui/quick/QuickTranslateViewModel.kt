@@ -52,7 +52,12 @@ enum class QuickPhase { PREPARING, WAITING_FOR_LOAD, LOADING_MODEL, QUEUED, TRAN
 @Immutable
 data class QuickUiState(
     val source: String = "",
+    /** Length of the text that arrived (> source.length when it was over IncomingText.MAX_CHARS). */
+    val originalLength: Int = 0,
     val replaceable: Boolean = false,
+    /** Long-text progress: segment [segment] of [segmentCount] (0 = not segmented / not running). */
+    val segment: Int = 0,
+    val segmentCount: Int = 0,
     val phase: QuickPhase = QuickPhase.PREPARING,
     /** Model being loaded / used (display name). */
     val modelName: String? = null,
@@ -65,6 +70,7 @@ data class QuickUiState(
     val message: String? = null,
 ) {
     val target: Language? get() = targets.firstOrNull { it.code == targetCode }
+    val truncated: Boolean get() = originalLength > source.length
     val isBusy: Boolean
         get() = phase == QuickPhase.PREPARING || phase == QuickPhase.WAITING_FOR_LOAD ||
             phase == QuickPhase.LOADING_MODEL || phase == QuickPhase.QUEUED || phase == QuickPhase.TRANSLATING
@@ -105,7 +111,7 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
     fun start(request: QuickRequest) {
         if (started) return
         started = true
-        _state.update { it.copy(source = request.text, replaceable = request.replaceable) }
+        _state.update { it.copy(source = request.text, originalLength = request.originalLength, replaceable = request.replaceable) }
         viewModelScope.launch {
             val list = withContext(Dispatchers.IO) { queryTtsEngines(getApplication()) }
             val st = settingsRepository.settings.first()
@@ -125,7 +131,7 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
         speaker.stop()
         job = viewModelScope.launch {
             _output.value = ""
-            _state.update { it.copy(phase = QuickPhase.PREPARING, message = null) }
+            _state.update { it.copy(phase = QuickPhase.PREPARING, message = null, segment = 0, segmentCount = 0) }
             try {
                 if (!ensureModel()) return@launch
                 translate()
@@ -234,7 +240,10 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
             when (ev) {
                 is GenerationEvent.Stage -> Unit
                 is GenerationEvent.Partial -> {
-                    if (_state.value.phase != QuickPhase.TRANSLATING) _state.update { it.copy(phase = QuickPhase.TRANSLATING) }
+                    val cur = _state.value
+                    if (cur.phase != QuickPhase.TRANSLATING || cur.segment != ev.segment || cur.segmentCount != ev.segmentCount) {
+                        _state.update { it.copy(phase = QuickPhase.TRANSLATING, segment = ev.segment, segmentCount = ev.segmentCount) }
+                    }
                     _output.value = ev.text
                 }
                 is GenerationEvent.Done -> {
@@ -254,7 +263,7 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
                             runCatching { history.add(entry) }.onFailure { AppLog.w(TAG, "saving history failed", it) }
                         }
                     }
-                    _state.update { it.copy(phase = QuickPhase.DONE, message = ev.stats.errorMessage()) }
+                    _state.update { it.copy(phase = QuickPhase.DONE, message = ev.stats.errorMessage(), segment = 0, segmentCount = 0) }
                 }
             }
         }
