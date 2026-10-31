@@ -167,7 +167,11 @@ fun TranslateScreen(
         val outputProvider = remember(output) { { output.value } }
         val imagePicker = rememberImagePicker(vm)
         val speaking by vm.speaking.collectAsStateWithLifecycle()
-        val highlight by vm.highlight.collectAsStateWithLifecycle()
+        // Read-aloud highlight changes per sentence (and per word with some engines): only the two
+        // text composables read it through these providers, so the screen itself does not recompose.
+        val highlight = vm.highlight.collectAsStateWithLifecycle()
+        val sourceHighlight = remember(highlight) { { highlight.value?.takeIf { it.target == SpeakTarget.SOURCE } } }
+        val outputHighlight = remember(highlight) { { highlight.value?.takeIf { it.target == SpeakTarget.OUTPUT } } }
         if (state.loaded == null) {
             NoModelState(
                 state = state,
@@ -215,7 +219,7 @@ fun TranslateScreen(
                     onGallery = imagePicker.gallery,
                     onClearImage = vm::clearImage,
                     speaking = speaking == SpeakTarget.SOURCE,
-                    highlight = highlight?.takeIf { it.target == SpeakTarget.SOURCE },
+                    highlight = sourceHighlight,
                     onSpeak = vm::toggleSpeakInput,
                 )
                 val reduceMotion = LocalReduceMotion.current
@@ -243,7 +247,7 @@ fun TranslateScreen(
                         stats = state.stats,
                         showStats = showStats,
                         speaking = speaking == SpeakTarget.OUTPUT,
-                        highlight = highlight?.takeIf { it.target == SpeakTarget.OUTPUT },
+                        highlight = outputHighlight,
                         onSpeak = vm::toggleSpeakOutput,
                     )
                 }
@@ -479,7 +483,7 @@ private fun InputCard(
     onGallery: () -> Unit,
     onClearImage: () -> Unit,
     speaking: Boolean,
-    highlight: SpeakHighlight?,
+    highlight: () -> SpeakHighlight?,
     onSpeak: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -515,7 +519,7 @@ private fun InputCard(
                     onValueChange = onInput,
                     placeholder = { Text(stringResource(R.string.translate_input_hint)) },
                     textStyle = MaterialTheme.typography.titleMedium,
-                    visualTransformation = speakHighlightTransformation(highlight, MaterialTheme.colorScheme.primaryContainer),
+                    visualTransformation = speakHighlightTransformation(highlight(), MaterialTheme.colorScheme.primaryContainer),
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 140.dp),
@@ -711,7 +715,7 @@ private fun OutputCard(
     stats: com.nekohome.translate.ui.GenStats?,
     showStats: Boolean,
     speaking: Boolean,
-    highlight: SpeakHighlight?,
+    highlight: () -> SpeakHighlight?,
     onSpeak: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -742,7 +746,7 @@ private fun OutputCard(
                 // No SelectionContainer while streaming: selection state would be rebuilt on
                 // every update. Text becomes selectable as soon as the translation finishes.
                 if (isTranslating) {
-                    StreamingText(output, Modifier.padding(end = 12.dp), highlight = null)
+                    StreamingText(output, Modifier.padding(end = 12.dp))
                 } else {
                     SelectionContainer(Modifier.padding(end = 12.dp)) { StreamingText(output, highlight = highlight) }
                 }
@@ -894,10 +898,11 @@ private fun StageLabel(stage: ImageStage, sinceMs: Long, backend: String?) {
 
 /** The only composable that reads the streamed text, so a token update recomposes just this. */
 @Composable
-private fun StreamingText(text: () -> String, modifier: Modifier = Modifier, highlight: SpeakHighlight? = null) {
+private fun StreamingText(text: () -> String, modifier: Modifier = Modifier, highlight: () -> SpeakHighlight? = { null }) {
     val hl = MaterialTheme.colorScheme.tertiaryContainer
     val hlWord = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)
     val t = text()
+    val highlight = highlight()
     Text(
         if (highlight == null) AnnotatedString(t) else highlightedText(t, highlight, hl, hlWord),
         style = MaterialTheme.typography.titleMedium,

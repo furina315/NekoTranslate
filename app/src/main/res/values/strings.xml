@@ -175,7 +175,6 @@
     <string name="tts_no_engine">未找到系统朗读（TTS）引擎</string>
     <string name="tts_missing_data">朗读引擎还没有下载「%1$s」语音包</string>
     <string name="tts_unsupported">当前朗读引擎不支持「%1$s」</string>
-    <string name="tts_failed">朗读失败</string>
     <string name="tts_open_settings">去设置</string>
     <string name="tts_failed_code">朗读失败（错误码 %1$d）</string>
     <string name="tts_engine_init_failed">朗读引擎「%1$s」启动失败，请先打开该引擎 App 确认可以试听，或换回系统默认引擎</string>
@@ -292,4 +291,21 @@
     <string name="glossary_undo">撤销</string>
     <string name="glossary_delete">删除</string>
     <string name="glossary_hint">匹配时不区分大小写。</string>
+    <!-- 设置 → 诊断 -->
+    <string name="settings_section_diag">诊断</string>
+    <string name="diag_export">导出日志</string>
+    <string name="diag_export_desc">反馈问题时附上，便于定位原因</string>
+    <string name="diag_export_title">导出日志</string>
+    <string name="diag_export_body">日志包含：应用版本、设备型号与 Android 版本、SoC / ABI、当前模型名与加载参数（GPU 档位、线程、上下文）、朗读引擎、主要设置，以及本应用的运行日志和崩溃记录。\n\n不包含原文和译文内容（只记录长度），也不包含术语表条目和翻译历史。可以先保存到文件查看后再发送。</string>
+    <string name="diag_share">分享</string>
+    <string name="diag_save">保存到文件</string>
+    <string name="diag_cancel">取消</string>
+    <string name="diag_saved">日志已保存</string>
+    <string name="diag_export_failed">导出日志失败</string>
+    <string name="diag_clear">清空日志</string>
+    <string name="diag_clear_desc">删除保存在本机的运行日志和崩溃记录</string>
+    <string name="diag_clear_title">清空日志？</string>
+    <string name="diag_clear_body">本机保存的运行日志和崩溃记录将被删除，无法恢复。</string>
+    <string name="diag_clear_confirm">清空</string>
+    <string name="diag_cleared">日志已清空</string>
 </resources>

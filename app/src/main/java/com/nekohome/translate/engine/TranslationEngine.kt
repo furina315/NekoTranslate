@@ -18,7 +18,8 @@ import com.nekohome.translate.llama.RgbImage
 import com.nekohome.translate.llama.SamplingParams
 import com.nekohome.translate.llama.StageListener
 import android.os.SystemClock
-import android.util.Log
+import com.nekohome.translate.diag.AppLog
+import com.nekohome.translate.diag.LogPrivacy
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
@@ -46,8 +47,29 @@ sealed interface GenerationEvent {
      * [backend] ("GPU" / "CPU") names where the stage runs when GPU acceleration is on, else null.
      */
     data class Stage(val stage: ImageStage, val atMs: Long, val backend: String? = null) : GenerationEvent
-    /** Text generated so far, already cleaned (think block / stop strings removed). */
-    data class Partial(val text: String, val segment: Int = 1, val segmentCount: Int = 1) : GenerationEvent
+    /**
+     * Text generated so far, already cleaned (think block / stop strings removed). For long texts
+     * it is the finished segments ([prefix]) plus the running one ([tail]); they are only joined
+     * when [text] is read, so the per-token events the UI throttle drops never copy the whole
+     * translation (that was O(n²) in the output length).
+     */
+    class Partial(
+        private val prefix: String,
+        private val tail: String,
+        val segment: Int = 1,
+        val segmentCount: Int = 1,
+    ) : GenerationEvent {
+        constructor(text: String, segment: Int = 1, segmentCount: Int = 1) : this("", text, segment, segmentCount)
+
+        val text: String by lazy(LazyThreadSafetyMode.NONE) { if (prefix.isEmpty()) tail else prefix + tail }
+
+        override fun equals(other: Any?): Boolean =
+            other is Partial && other.segment == segment && other.segmentCount == segmentCount && other.text == text
+
+        override fun hashCode(): Int = (text.hashCode() * 31 + segment) * 31 + segmentCount
+
+        override fun toString(): String = "Partial(${LogPrivacy.len(text)}, segment=$segment/$segmentCount)"
+    }
     data class Done(val text: String, val stats: GenerationStats) : GenerationEvent
 }
 
@@ -88,15 +110,33 @@ class TranslationEngine(context: Context) {
     @Volatile
     private var mmprojKey: MmprojKey? = null
 
-    suspend fun systemInfo(): String = withContext(dispatcher) {
+    /** File name of the vision projector currently loaded, if any (diagnostics). */
+    val mmprojName: String? get() = mmprojKey?.path?.let { File(it).name }
+
+    /**
+     * Set by [cancel], cleared when a translation starts. The native stop flag is reset at the
+     * start of every native generation, so a stop pressed between two segments (or before the
+     * first token) used to be lost; the token callbacks and the segment loop check this too.
+     */
+    @Volatile
+    private var cancelRequested = false
+
+    /** [systemInfo] once known (it never changes in a process); read without the engine thread. */
+    @Volatile
+    var cachedSystemInfo: String? = null
+        private set
+
+    suspend fun systemInfo(): String = cachedSystemInfo ?: withContext(dispatcher) {
         LlamaBackend.init(appContext)
-        LlamaBackend.systemInfo()
+        LlamaBackend.systemInfo().also { cachedSystemInfo = it }
     }
 
     /** Probes the GPU (once) and returns its state, consuming a crash mark left by a previous run. */
     suspend fun gpuState(): GpuState = withContext(dispatcher) {
         LlamaBackend.init(appContext)
-        gpuGuard.state(gpuGuard.probe { LlamaBackend.gpuProbe(appContext) })
+        gpuGuard.state(gpuGuard.probe { LlamaBackend.gpuProbe(appContext) }).also {
+            AppLog.i(LOG_TAG, "OpenCL probe: device=\"${it.device.orEmpty()}\" verified=${it.verified} failure=${it.failure}")
+        }
     }
 
     /**
@@ -109,7 +149,7 @@ class TranslationEngine(context: Context) {
         if (device.isEmpty()) return@withContext GpuState(device = "")
         val t0 = SystemClock.elapsedRealtime()
         val error = gpuGuard.guarded(true) { LlamaBackend.gpuSelfTest() }
-        Log.i(LOG_TAG, "GPU self-test on $device: ${error.ifEmpty { "passed" }} " +
+        AppLog.i(LOG_TAG, "OpenCL self-test on $device: ${error.ifEmpty { "passed" }} " +
             "(${SystemClock.elapsedRealtime() - t0} ms)")
         gpuGuard.recordSelfTest(device, error)
         gpuGuard.state(device)
@@ -126,19 +166,29 @@ class TranslationEngine(context: Context) {
         LlamaBackend.init(appContext)
         unloadInternal()
         val t0 = System.nanoTime()
-        val s = gpuGuard.guarded(params.gpuMode.textOnGpu) { LlamaSession.load(file.absolutePath, params) }
+        AppLog.i(AppLog.TAG_MODEL, "loading ${file.name} (${file.length() / (1024 * 1024)} MB): n_ctx=${params.nCtx} " +
+            "threads=${params.nThreads}/${params.nThreadsBatch} batch=${params.nBatch} mmap=${params.useMmap} gpu=${params.gpuMode.key}")
+        val s = try {
+            gpuGuard.guarded(params.gpuMode.textOnGpu) { LlamaSession.load(file.absolutePath, params) }
+        } catch (t: Throwable) {
+            AppLog.e(AppLog.TAG_MODEL, "loading ${file.name} failed (RSS ${MemoryStats.residentMb()} MB)", t)
+            throw t
+        }
         val ms = (System.nanoTime() - t0) / 1_000_000
         session = s
         val onGpu = s.textOnGpu
-        Log.i(LOG_TAG, "model ${file.name} loaded in $ms ms, gpu mode ${params.gpuMode}, text model on " +
-            if (onGpu) "GPU" else "CPU")
+        AppLog.i(AppLog.TAG_MODEL, "model ${file.name} loaded in $ms ms, gpu mode ${params.gpuMode}, text model on " +
+            (if (onGpu) "GPU" else "CPU") + ", RSS ${MemoryStats.residentMb()} MB")
         LoadedModel(file.absolutePath, s.modelInfo(), ms, params, textOnGpu = onGpu).also { loaded = it }
     }
 
     suspend fun unload() = withContext(dispatcher) { unloadInternal() }
 
     private fun unloadInternal() {
-        session?.close() // also frees the session's mmproj natively
+        val s = session ?: return
+        val before = MemoryStats.residentMb()
+        s.close() // also frees the session's mmproj natively
+        AppLog.i(AppLog.TAG_MODEL, "model unloaded (RSS $before -> ${MemoryStats.residentMb()} MB)")
         session = null
         loaded = null
         mmprojKey = null
@@ -168,14 +218,20 @@ class TranslationEngine(context: Context) {
         // The vision encoder is compute bound: it gets the prefill (performance core) thread count.
         val threads = loaded?.params?.nThreadsBatch ?: LoadParams.defaultBatchThreads()
         val t0 = SystemClock.elapsedRealtime()
-        gpuGuard.guarded(gpu) { s.loadMmproj(mmproj.absolutePath, threads, imageMaxTokens, useGpu = gpu) }
-        Log.i(LOG_TAG, "mmproj ${mmproj.name} loaded in ${SystemClock.elapsedRealtime() - t0} ms " +
+        try {
+            gpuGuard.guarded(gpu) { s.loadMmproj(mmproj.absolutePath, threads, imageMaxTokens, useGpu = gpu) }
+        } catch (t: Throwable) {
+            AppLog.e(LOG_TAG, "mmproj ${mmproj.name} failed to load", t)
+            throw t
+        }
+        AppLog.i(LOG_TAG, "mmproj ${mmproj.name} loaded in ${SystemClock.elapsedRealtime() - t0} ms " +
             "(threads=$threads, image_max_tokens=$imageMaxTokens, encoder on ${if (s.encoderOnGpu) "GPU" else "CPU"})")
         mmprojKey = key
     }
 
     /** Thread-safe stop request for the running generation. */
     fun cancel() {
+        cancelRequested = true
         session?.cancel()
     }
 
@@ -188,17 +244,17 @@ class TranslationEngine(context: Context) {
         sampling: SamplingParams = profile.sampling,
     ): Flow<GenerationEvent> = channelFlow {
         val s = session ?: throw IllegalStateException("No model loaded")
+        cancelRequested = false
         val prompt = formatPrompt(s, profile.chatFormat, userPrompt)
         val raw = StringBuilder()
         val cleaner = OutputCleaner(profile.stopStrings)
-        var hitStop = false
         val stats = s.generate(prompt, sampling) { piece ->
             raw.append(piece)
             val cleaned = cleaner.clean(raw)
-            hitStop = cleaned.hitStop
-            trySend(GenerationEvent.Partial(cleaned.text))
-            !hitStop && !isClosedForSend
+            val open = !trySend(GenerationEvent.Partial(cleaned.text)).isClosed
+            !cleaned.hitStop && open && !cancelRequested
         }
+        logResult("text", stats)
         val finalText = cleaner.clean(raw).text
         send(GenerationEvent.Done(finalText, stats))
     }.buffer(Channel.CONFLATED).flowOn(dispatcher)
@@ -214,27 +270,34 @@ class TranslationEngine(context: Context) {
         sampling: SamplingParams = profile.sampling,
     ): Flow<GenerationEvent> = channelFlow {
         val s = session ?: throw IllegalStateException("No model loaded")
+        cancelRequested = false
         val total = segments.size
+        AppLog.i(LOG_TAG_TEXT, "translate: $total segment(s), prompts ${segments.sumOf { it.prompt.length }} chars")
         val done = StringBuilder()
         val stats = ArrayList<GenerationStats>()
+        var closed = false
         for ((idx, seg) in segments.withIndex()) {
-            if (isClosedForSend) break
-            val prefix = if (idx == 0) "" else done.toString() + seg.separator
-            trySend(GenerationEvent.Partial(prefix, idx + 1, total))
+            if (closed || cancelRequested) break
+            if (idx > 0) done.append(seg.separator)
+            // Finished segments as one string per segment (not per token); see GenerationEvent.Partial.
+            val prefix = done.toString()
+            closed = trySend(GenerationEvent.Partial(prefix, "", idx + 1, total)).isClosed
             val prompt = formatPrompt(s, profile.chatFormat, seg.prompt)
             val raw = StringBuilder()
             val cleaner = OutputCleaner(profile.stopStrings)
             val st = s.generate(prompt, sampling) { piece ->
                 raw.append(piece)
                 val cleaned = cleaner.clean(raw)
-                trySend(GenerationEvent.Partial(prefix + cleaned.text, idx + 1, total))
-                !cleaned.hitStop && !isClosedForSend
+                closed = trySend(GenerationEvent.Partial(prefix, cleaned.text, idx + 1, total)).isClosed
+                !cleaned.hitStop && !closed && !cancelRequested
             }
             stats.add(st)
-            done.append(prefix.substring(done.length)).append(cleaner.clean(raw).text)
+            done.append(cleaner.clean(raw).text)
             if (st.stopReason == StopReason.CANCELLED || st.stopReason == StopReason.ERROR || !st.ok) break
         }
-        send(GenerationEvent.Done(done.toString(), SegmentStats.combine(stats)))
+        val combined = SegmentStats.combine(stats)
+        logResult("text", combined)
+        send(GenerationEvent.Done(done.toString(), combined))
     }.buffer(Channel.CONFLATED).flowOn(dispatcher)
 
     /**
@@ -251,6 +314,7 @@ class TranslationEngine(context: Context) {
         sampling: SamplingParams = profile.sampling,
     ): Flow<GenerationEvent> = channelFlow {
         val s = session ?: throw IllegalStateException("No model loaded")
+        cancelRequested = false
         val t0 = SystemClock.elapsedRealtime()
         // Backend labels only when GPU acceleration is on for this model, so CPU users see no change.
         val gpuOn = loaded?.params?.gpuMode?.encoderOnGpu == true
@@ -272,7 +336,6 @@ class TranslationEngine(context: Context) {
         val prompt = formatPrompt(s, profile.chatFormat, userPrompt)
         val raw = StringBuilder()
         val cleaner = OutputCleaner(profile.stopStrings)
-        var hitStop = false
         var firstTokenLogged = false
         val onStage = StageListener { st ->
             when (st) {
@@ -281,25 +344,35 @@ class TranslationEngine(context: Context) {
                 // STAGE_GENERATE: the prefill label stays until the first token replaces it.
             }
         }
-        Log.i(LOG_TAG, "image ${image.width}x${image.height}, image_max_tokens=$imageMaxTokens")
+        AppLog.i(LOG_TAG, "image ${image.width}x${image.height}, image_max_tokens=$imageMaxTokens")
         val stats = s.generateWithImage(prompt, image, sampling, onStage) { piece ->
             if (!firstTokenLogged) {
                 firstTokenLogged = true
-                Log.i(LOG_TAG, "first token after ${SystemClock.elapsedRealtime() - t0} ms")
+                AppLog.i(LOG_TAG, "first token after ${SystemClock.elapsedRealtime() - t0} ms")
             }
             raw.append(piece)
             val cleaned = cleaner.clean(raw)
-            hitStop = cleaned.hitStop
-            trySend(GenerationEvent.Partial(cleaned.text))
-            !hitStop && !isClosedForSend
+            val open = !trySend(GenerationEvent.Partial(cleaned.text)).isClosed
+            !cleaned.hitStop && open && !cancelRequested
         }
+        logResult("image", stats)
         val finalText = cleaner.clean(raw).text
         send(GenerationEvent.Done(finalText, stats))
     }.buffer(Channel.CONFLATED).flowOn(dispatcher)
 
+    /** One line per finished generation: counts and speed only, never the text. */
+    private fun logResult(kind: String, st: GenerationStats) {
+        val line = "$kind done: status=${st.status} stop=${st.stopReason} prompt=${st.promptTokens} tok " +
+            "gen=${st.generatedTokens} tok (${String.format(java.util.Locale.US, "%.1f", st.tokensPerSecond)} tok/s)"
+        val err = st.errorMessage()
+        if (err != null) AppLog.w(if (kind == "image") LOG_TAG else LOG_TAG_TEXT, "$line: $err")
+        else AppLog.i(if (kind == "image") LOG_TAG else LOG_TAG_TEXT, line)
+    }
+
     private companion object {
         /** Image translation timings: `adb logcat -s NekoImg`. */
         const val LOG_TAG = "NekoImg"
+        const val LOG_TAG_TEXT = "NekoTranslate"
     }
 
     private fun formatPrompt(s: LlamaSession, format: ChatFormat, userPrompt: String): String = when (format) {

@@ -7,6 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -37,7 +39,9 @@ class TtsSettingsTest {
     }
 
     private fun repository(): SettingsRepository {
-        if (::scope.isInitialized) scope.cancel()
+        // Wait until the previous DataStore is really gone: opening a second one on the same file
+        // while the first is still shutting down made this test flaky.
+        if (::scope.isInitialized) runBlocking { scope.coroutineContext[Job]!!.cancelAndJoin() }
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val store = PreferenceDataStoreFactory.create(scope = scope) { File(dir, "settings.preferences_pb") }
         return SettingsRepository(store)

@@ -11,7 +11,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.util.Log
+import com.nekohome.translate.diag.AppLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -129,6 +129,7 @@ class Speaker(
         session++
         gate.cancel()
         main.removeCallbacks(initTicker)
+        main.removeCallbacks(watchdog)
         if (gate.state == TtsInitGate.State.READY) runCatching { tts?.stop() }
         _speaking.value = null
         _highlight.value = null
@@ -175,11 +176,11 @@ class Speaker(
         var created: TextToSpeech? = null
         val listener = TextToSpeech.OnInitListener { status -> main.post { onInit(created, status) } }
         val pkg = enginePackage
-        Log.i(TAG, "binding engine ${pkg ?: "(system default)"}")
+        AppLog.i(TAG, "binding engine ${pkg ?: "(system default)"}")
         created = try {
             if (pkg != null) TextToSpeech(appContext, listener, pkg) else TextToSpeech(appContext, listener)
         } catch (e: Exception) {
-            Log.w(TAG, "creating TextToSpeech for ${pkg ?: "(system default)"} failed", e)
+            AppLog.w(TAG, "creating TextToSpeech for ${pkg ?: "(system default)"} failed", e)
             null
         }
         tts = created
@@ -198,11 +199,11 @@ class Speaker(
             when (gate.onTick(SystemClock.elapsedRealtime())) {
                 TtsInitGate.Tick.LOADING -> onNotice(SpeakNotice.ENGINE_LOADING)
                 TtsInitGate.Tick.TIMEOUT -> {
-                    Log.w(TAG, "engine ${instancePackage ?: "(system default)"} not ready after ${gate.timeoutMs} ms")
+                    AppLog.w(TAG, "engine ${instancePackage ?: "(system default)"} not ready after ${gate.timeoutMs} ms")
                     onNotice(SpeakNotice.ENGINE_SLOW)
                 }
                 TtsInitGate.Tick.GIVE_UP -> {
-                    Log.w(TAG, "engine ${instancePackage ?: "(system default)"} not ready after ${gate.giveUpMs} ms, request dropped")
+                    AppLog.w(TAG, "engine ${instancePackage ?: "(system default)"} not ready after ${gate.giveUpMs} ms, request dropped")
                     _speaking.value = null
                     onNotice(SpeakNotice.ENGINE_GAVE_UP)
                     return
@@ -223,7 +224,7 @@ class Speaker(
         val engine = tts
         val pkg = instancePackage
         if (status != TextToSpeech.SUCCESS || engine == null) {
-            Log.w(TAG, "onInit failed: engine=${pkg ?: "(system default)"} status=$status")
+            AppLog.w(TAG, "onInit failed: engine=${pkg ?: "(system default)"} status=$status")
             runCatching { engine?.shutdown() }
             tts = null
             val request = gate.onInit(success = false)
@@ -232,7 +233,7 @@ class Speaker(
             if (request != null) onProblem(if (pkg != null) SpeakProblem.EngineInitFailed(pkg) else SpeakProblem.NoEngine)
             return
         }
-        Log.i(TAG, "onInit ok: engine=${pkg ?: "(system default)"}")
+        AppLog.i(TAG, "onInit ok: engine=${pkg ?: "(system default)"}")
         engine.setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -274,20 +275,20 @@ class Speaker(
         if (voice != null) {
             val v = runCatching { engine.voices.firstOrNull { it.name == voice.name } }.getOrNull()
             if (v != null && runCatching { engine.setVoice(v) }.getOrDefault(TextToSpeech.ERROR) == TextToSpeech.SUCCESS) {
-                Log.i(TAG, "language ${locale.toLanguageTag()} via voice ${voice.name} (${voice.locale})")
+                AppLog.i(TAG, "language ${locale.toLanguageTag()} via voice ${voice.name} (${voice.locale})")
                 return true
             }
         }
         val ids = availability.joinToString()
         return when (val d = TtsVoicePlan.onNoMatch(explicit, locale, availability)) {
             NoMatchDecision.EngineDefault -> {
-                Log.i(TAG, "engine $instancePackage has no ${locale.toLanguageTag()} voice (results $ids, " +
+                AppLog.i(TAG, "engine $instancePackage has no ${locale.toLanguageTag()} voice (results $ids, " +
                     "${voices.size} voices); speaking with its default voice")
                 runCatching { engine.defaultVoice }.getOrNull()?.let { dv -> runCatching { engine.setVoice(dv) } }
                 true
             }
             is NoMatchDecision.Block -> {
-                Log.i(TAG, "system engine has no ${locale.toLanguageTag()} voice (results $ids)")
+                AppLog.i(TAG, "system engine has no ${locale.toLanguageTag()} voice (results $ids)")
                 _speaking.value = null
                 onProblem(SpeakProblem.MissingVoice(code = request.code, missingData = d.missingData, chinese = d.chinese))
                 false
@@ -318,27 +319,37 @@ class Speaker(
             val result = runCatching { engine.speak(chunk, mode, params, utteranceId(sid, i, chunks.size)) }
                 .getOrDefault(TextToSpeech.ERROR)
             if (result != TextToSpeech.SUCCESS) {
-                Log.w(TAG, "speak() refused: engine=${instancePackage ?: "(system default)"} result=$result chunk=$i/${chunks.size}")
+                AppLog.w(TAG, "speak() refused: engine=${instancePackage ?: "(system default)"} result=$result chunk=$i/${chunks.size}")
                 stop()
                 onProblem(SpeakProblem.Failed(result))
                 return
             }
         }
+        AppLog.i(TAG, "speak ${request.target}: ${chunks.size} utterance(s), ${request.text.length} chars, lang ${request.code}, " +
+            "rate $rate pitch $pitch, engine ${instancePackage ?: "(system default)"}")
         // Watchdog: an engine whose process died / hung never calls back at all.
-        main.postDelayed({
-            if (sid == session && startedSession != sid && _speaking.value != null) {
-                Log.w(TAG, "engine ${instancePackage ?: "(system default)"} accepted the text but never started (${NO_START_MS} ms)")
-                stop()
-                onProblem(SpeakProblem.NoResponse)
-            }
-        }, NO_START_MS)
+        watchdogSession = sid
+        main.removeCallbacks(watchdog)
+        main.postDelayed(watchdog, NO_START_MS)
+    }
+
+    @Volatile
+    private var watchdogSession = -1
+
+    /** One Runnable (removed by [stop]) instead of a lambda per request kept alive for 20 s. */
+    private val watchdog = Runnable {
+        val sid = watchdogSession
+        if (sid == session && startedSession != sid && _speaking.value != null) {
+            AppLog.w(TAG, "engine ${instancePackage ?: "(system default)"} accepted the text but never started (${NO_START_MS} ms)")
+            stop()
+            onProblem(SpeakProblem.NoResponse)
+        }
     }
 
     private val listener = object : UtteranceProgressListener() {
         override fun onStart(utteranceId: String?) {
-            val (sid) = parse(utteranceId) ?: return
+            val (sid, i) = parse(utteranceId) ?: return
             startedSession = sid
-            val i = parse(utteranceId)?.get(1) ?: return
             val sp = spans.getOrNull(i) ?: return
             if (sid == session) _highlight.value = SpeakHighlight(spanTarget, sp)
         }
@@ -361,7 +372,7 @@ class Speaker(
         override fun onError(utteranceId: String?) = onError(utteranceId, TextToSpeech.ERROR)
 
         override fun onError(utteranceId: String?, errorCode: Int) {
-            Log.w(TAG, "onError: engine=${instancePackage ?: "(system default)"} utterance=$utteranceId errorCode=$errorCode")
+            AppLog.w(TAG, "onError: engine=${instancePackage ?: "(system default)"} utterance=$utteranceId errorCode=$errorCode")
             val (sid) = parse(utteranceId) ?: return
             if (sid != session) return
             main.post {
@@ -394,24 +405,19 @@ class Speaker(
 }
 
 /** Opens the system 文字转语音输出 page (preferred engine), falling back to the Settings app. */
-fun openSystemTtsSettings(context: Context) {
-    for (intent in listOf(Intent("com.android.settings.TTS_SETTINGS"), Intent(Settings.ACTION_SETTINGS))) {
-        try {
-            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            return
-        } catch (_: ActivityNotFoundException) {
-        } catch (_: SecurityException) {
-        }
-    }
-}
+fun openSystemTtsSettings(context: Context) = openFirst(
+    context, Intent("com.android.settings.TTS_SETTINGS"), Intent(Settings.ACTION_SETTINGS),
+)
 
 /** Opens the system TTS settings (engine choice, voice downloads), falling back to Settings. */
-fun openTtsSettings(context: Context) {
-    val intents = listOf(
-        Intent("com.android.settings.TTS_SETTINGS"),
-        Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA),
-        Intent(Settings.ACTION_SETTINGS),
-    )
+fun openTtsSettings(context: Context) = openFirst(
+    context,
+    Intent("com.android.settings.TTS_SETTINGS"),
+    Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA),
+    Intent(Settings.ACTION_SETTINGS),
+)
+
+private fun openFirst(context: Context, vararg intents: Intent) {
     for (intent in intents) {
         try {
             context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

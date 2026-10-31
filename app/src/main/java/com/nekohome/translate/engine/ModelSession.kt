@@ -53,6 +53,9 @@ class ModelSession private constructor(context: Context) {
     /** GPU state, probed once per process; [rememberGpu] after a self-test / reset. */
     suspend fun gpuState(): GpuState = gpu ?: engine.gpuState().also { gpu = it }
 
+    /** GPU state if already probed in this process (no probing; diagnostics). */
+    fun gpuStateOrNull(): GpuState? = gpu
+
     fun rememberGpu(state: GpuState) {
         gpu = state
     }

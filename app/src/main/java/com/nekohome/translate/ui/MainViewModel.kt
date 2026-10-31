@@ -66,6 +66,9 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.shareIn
+import com.nekohome.translate.diag.AppLog
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -229,6 +232,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val saveJobs = HashMap<String, Job>()
     private val paramsReady = viewModelScope.async { paramsStore.loadAll() }
 
+    /**
+     * One DataStore collection (and one glossary parse per change) shared by every settings
+     * observer below, instead of eight independent collectors each mapping the whole preferences.
+     */
+    private val settings = settingsRepository.settings.shareIn(viewModelScope, SharingStarted.Eagerly, replay = 1)
+
     init {
         viewModelScope.launch {
             val saved = paramsReady.await()
@@ -258,27 +267,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.map { it.targetCode }.distinctUntilChanged().collect { session.lastTargetCode.value = it }
         }
         viewModelScope.launch {
-            settingsRepository.settings.map { it.chineseVoiceHintDismissed }.distinctUntilChanged().collect {
+            settings.map { it.chineseVoiceHintDismissed }.distinctUntilChanged().collect {
                 chineseVoiceHintDismissed = it
             }
         }
         viewModelScope.launch {
-            settingsRepository.settings.map { it.historyEnabled }.distinctUntilChanged().collect { historyEnabled = it }
+            settings.map { it.historyEnabled }.distinctUntilChanged().collect { historyEnabled = it }
         }
         viewModelScope.launch {
-            settingsRepository.settings.map { if (it.glossaryEnabled) it.glossary else emptyList() }
+            settings.map { if (it.glossaryEnabled) it.glossary else emptyList() }
                 .distinctUntilChanged().collect { glossary = it }
         }
         refreshTtsEngines()
         viewModelScope.launch {
-            settingsRepository.settings.map { it.ttsRate to it.ttsPitch }.distinctUntilChanged()
+            settings.map { it.ttsRate to it.ttsPitch }.distinctUntilChanged()
                 .collect { (r, p) -> speaker.setTuning(r, p) }
         }
         viewModelScope.launch {
             // Bind the chosen engine; an uninstalled choice falls back to the system default, and
             // a changed system default rebinds while following it.
             combine(
-                settingsRepository.settings.map { it.ttsEngine }.distinctUntilChanged(),
+                settings.map { it.ttsEngine }.distinctUntilChanged(),
                 _ttsEngines.filterNotNull(),
             ) { saved, list ->
                 val pkg = TtsEngineChoice.resolve(saved, list.engines)
@@ -289,7 +298,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch {
-            settingsRepository.settings.map { it.defaultTargetCode }.distinctUntilChanged().collect { code ->
+            settings.map { it.defaultTargetCode }.distinctUntilChanged().collect { code ->
                 _state.update { st ->
                     st.copy(
                         targetCode = code,
@@ -336,6 +345,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                AppLog.e(AppLog.TAG_MODEL, "model import failed", t)
                 _state.update { it.copy(importProgress = null, message = str(R.string.msg_import_failed, t.message ?: "")) }
             }
         }
@@ -376,6 +387,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 val hint = if (model.architecture == "hunyuan-dense") str(R.string.msg_load_failed_hy_hint) else ""
                 _state.update {
                     it.copy(loadingPath = null, loaded = null, loadInfo = "", message = str(R.string.msg_load_failed, t.message ?: "") + hint)
@@ -457,6 +469,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 associateMmproj(model, file)
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
+                AppLog.e(AppLog.TAG_MODEL, "mmproj import failed", t)
                 _state.update {
                     it.copy(importProgress = null, mmprojImportFor = null, message = str(R.string.msg_mmproj_import_failed, t.message ?: ""))
                 }
@@ -568,6 +581,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 translate()
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
+                AppLog.e(TAG, "image decode failed", t)
                 _state.update { it.copy(message = str(R.string.msg_image_failed, t.message ?: t.javaClass.simpleName)) }
             } finally {
                 _state.update { it.copy(isPreparingImage = false) }
@@ -637,6 +651,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 engine.gpuSelfTest()
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
+                AppLog.e(TAG, "OpenCL self-test threw", t)
                 gpu.copy(failure = t.message ?: t.javaClass.simpleName)
             }
             session.rememberGpu(result)
@@ -897,6 +912,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
+                AppLog.e(TAG, "translation failed", t)
                 _state.update { it.copy(isTranslating = false, message = str(R.string.msg_translate_failed, t.message ?: "")) }
             } finally {
                 _state.update { it.copy(isTranslating = false, imageStage = null, segmentIndex = 0, segmentCount = 0) }
@@ -921,7 +937,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             modelName = modelName,
             createdAt = System.currentTimeMillis(),
         )
-        viewModelScope.launch { runCatching { history.add(entry) } }
+        viewModelScope.launch {
+            runCatching { history.add(entry) }.onFailure { AppLog.w(TAG, "saving history failed", it) }
+        }
     }
 
     /** Puts a history entry back on the translate page: text, translation and language pair. */
@@ -952,6 +970,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val SAVE_DEBOUNCE_MS = 300L
+        const val TAG = "NekoTranslate"
 
         /** Max UI update rate for streamed output (~30 fps); the final text is always delivered. */
         const val OUTPUT_FRAME_MS = 33L

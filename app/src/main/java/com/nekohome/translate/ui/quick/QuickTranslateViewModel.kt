@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import com.nekohome.translate.diag.AppLog
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
@@ -130,6 +131,7 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
                 translate()
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
+                AppLog.e(TAG, "quick translation failed", t)
                 _state.update { it.copy(phase = QuickPhase.FAILED, message = str(R.string.quick_translate_failed, t.message ?: t.javaClass.simpleName)) }
             }
         }
@@ -138,6 +140,8 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
     /** True once a model is loaded in the shared session (loading it when needed). */
     private suspend fun ensureModel(): Boolean {
         val models = repository.listModels()
+        // Read once: used for the auto-load and for the loaded model's sampling parameters.
+        val allParams = paramsStore.loadAll()
         val decision = AutoLoadPolicy.decide(
             loadedPath = session.loaded.value?.path,
             loadingPath = session.loadingPath.value,
@@ -154,12 +158,13 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
             is AutoLoadDecision.Load -> {
                 val target = models.first { it.fileName == decision.fileName }
                 _state.update { it.copy(phase = QuickPhase.LOADING_MODEL, modelName = target.file.nameWithoutExtension, loadSeconds = 0) }
-                val p = paramsStore.loadAll()[target.fileName] ?: ModelParams()
+                val p = allParams[target.fileName] ?: ModelParams()
                 val gpuUsable = runCatching { session.gpuState().usable }.getOrDefault(false)
                 try {
                     withTicker { session.load(target.file, p.loadParams(gpuUsable)) }
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
+                    AppLog.e(TAG, "quick card: auto-load of ${target.fileName} failed", t)
                     _state.update { it.copy(phase = QuickPhase.FAILED, message = str(R.string.quick_load_failed, t.message ?: "")) }
                     return false
                 }
@@ -170,13 +175,14 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         val loaded = session.loaded.value
-        val m = loaded?.let { l -> repository.listModels().firstOrNull { it.file.absolutePath == l.path } }
+        // The model list read above still holds (a load does not add files); no second header scan.
+        val m = loaded?.let { l -> models.firstOrNull { it.file.absolutePath == l.path } }
         if (m == null) {
             _state.update { it.copy(phase = QuickPhase.NO_MODEL, message = str(R.string.quick_no_model)) }
             return false
         }
         model = m
-        params = paramsStore.loadAll()[m.fileName] ?: ModelParams()
+        params = allParams[m.fileName] ?: ModelParams()
         val profile = params.profile(m.profile)
         val settings = settingsRepository.settings.first()
         val wanted = _state.value.targetCode.takeIf { _state.value.targets.isNotEmpty() }
@@ -244,7 +250,9 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
                             modelName = m.file.nameWithoutExtension,
                             createdAt = System.currentTimeMillis(),
                         )
-                        viewModelScope.launch { runCatching { history.add(entry) } }
+                        viewModelScope.launch {
+                            runCatching { history.add(entry) }.onFailure { AppLog.w(TAG, "saving history failed", it) }
+                        }
                     }
                     _state.update { it.copy(phase = QuickPhase.DONE, message = ev.stats.errorMessage()) }
                 }
@@ -303,6 +311,7 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val OUTPUT_FRAME_MS = 33L
+        const val TAG = "NekoQuick"
         val SEQ = AtomicInteger()
     }
 }

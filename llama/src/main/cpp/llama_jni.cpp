@@ -656,9 +656,14 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerate(
     if (s == nullptr) return make_result(env, -1, 0, 0, 0, 0, 4);
     s->cancel.store(false);
 
+    // Method ids stay valid after the class reference is gone; drop the local ref right away.
     jclass cb_cls = env->GetObjectClass(callback);
     jmethodID on_token = env->GetMethodID(cb_cls, "onToken", "([B)Z");
-    if (on_token == nullptr) return make_result(env, -1, 0, 0, 0, 0, 4);
+    env->DeleteLocalRef(cb_cls);
+    if (on_token == nullptr) {
+        env->ExceptionClear();   // NoSuchMethodError: report a bad callback instead of throwing
+        return make_result(env, -1, 0, 0, 0, 0, 4);
+    }
 
     const llama_vocab * vocab = llama_model_get_vocab(s->model);
     const std::string prompt = bytes_to_string(env, jprompt);
@@ -817,9 +822,14 @@ Java_com_nekohome_translate_llama_LlamaNative_nativeGenerateImage(
     };
     if (s->mtmd == nullptr) return make_result(env, -5, 0, 0, 0, 0, 4);
 
+    // Method ids stay valid after the class reference is gone; drop the local ref right away.
     jclass cb_cls = env->GetObjectClass(callback);
     jmethodID on_token = env->GetMethodID(cb_cls, "onToken", "([B)Z");
-    if (on_token == nullptr) return make_result(env, -1, 0, 0, 0, 0, 4);
+    env->DeleteLocalRef(cb_cls);
+    if (on_token == nullptr) {
+        env->ExceptionClear();   // NoSuchMethodError: report a bad callback instead of throwing
+        return make_result(env, -1, 0, 0, 0, 0, 4);
+    }
 
     // ---- image -> mtmd_bitmap (copies the pixels)
     if (jrgb == nullptr || width <= 0 || height <= 0) return make_result(env, -6, 0, 0, 0, 0, 4);
