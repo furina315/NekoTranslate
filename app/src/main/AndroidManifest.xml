@@ -72,9 +72,10 @@
             </intent-filter>
         </activity>
 
-        <!-- Hands the camera app a content:// URI to write the photo to (cache/camera/). -->
+        <!-- Hands the camera app a content:// URI to write the photo to (cache/camera/), and shares
+             exported logs (cache/export/, .log reported as text/plain by LogFileProvider). -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name=".diag.LogFileProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">

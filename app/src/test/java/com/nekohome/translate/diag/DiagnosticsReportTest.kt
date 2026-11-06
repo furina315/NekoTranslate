@@ -126,7 +126,7 @@ class DiagnosticsReportTest {
 
     @Test
     fun fileNameAndSizes() {
-        assertEquals("NekoTranslate-log-20261031-140211.txt", DiagnosticsReport.fileName(1_793_426_531_123L, shanghai))
+        assertEquals("NekoTranslate-log-20261031-140211.log", DiagnosticsReport.fileName(1_793_426_531_123L, shanghai))
         assertEquals("512 B", DiagnosticsReport.mb(512))
         assertEquals("512.0 KB", DiagnosticsReport.mb(512 * 1024))
     }

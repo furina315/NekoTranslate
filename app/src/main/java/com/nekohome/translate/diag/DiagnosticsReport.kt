@@ -55,6 +55,8 @@ data class DiagInfo(
     val ttsEffective: String?,
     val settings: List<Pair<String, String>>,
     val persistentLogBytes: Long,
+    /** 「原生崩溃」 header line, e.g. "2 条（最近 2026-11-06 …）"; blank to omit. */
+    val nativeCrashSummary: String = "",
 )
 
 /** Formats [DiagInfo] as the plain-text header of an export. Pure JVM. */
@@ -106,6 +108,7 @@ object DiagnosticsReport {
         for ((k, v) in info.settings) kv(k, v)
         appendLine()
         kv("持久化日志", mb(info.persistentLogBytes))
+        if (info.nativeCrashSummary.isNotBlank()) kv("原生崩溃", info.nativeCrashSummary)
     }
 
     private fun StringBuilder.section(title: String) {
@@ -125,11 +128,11 @@ object DiagnosticsReport {
         else -> "$bytes B"
     }
 
-    /** Export file name: NekoTranslate-log-20261031-140211.txt */
+    /** Export file name: NekoTranslate-log-20261031-140211.log (plain text, MIME text/plain). */
     fun fileName(timeMs: Long, zone: TimeZone = TimeZone.getDefault()): String =
         "NekoTranslate-log-" +
             java.text.SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).apply { timeZone = zone }.format(java.util.Date(timeMs)) +
-            ".txt"
+            ".log"
 
     /** Keeps the last [maxChars] of [text], cut at a line start, with a marker. */
     fun tail(text: String, maxChars: Int): String {
@@ -140,10 +143,17 @@ object DiagnosticsReport {
         return "…（前面 ${start} 个字符已省略）\n" + text.substring(start)
     }
 
-    /** Header + persistent log + logcat, scrubbed by [LogPrivacy.scrub]. */
-    fun assemble(header: String, persistent: String, logcat: String): String = LogPrivacy.scrub(
+    /**
+     * Header + 原生崩溃 section ([NativeCrashText.reportSection], may be "") + persistent log +
+     * logcat, scrubbed by [LogPrivacy.scrub].
+     */
+    fun assemble(header: String, persistent: String, logcat: String, nativeCrashes: String = ""): String = LogPrivacy.scrub(
         buildString {
             append(header)
+            if (nativeCrashes.isNotEmpty()) {
+                append(nativeCrashes)
+                if (!endsWith('\n')) append('\n')
+            }
             append("\n== 应用日志（持久化，跨重启保留）==\n")
             append(persistent.ifBlank { "（空）\n" })
             if (!endsWith('\n')) append('\n')

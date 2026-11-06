@@ -300,7 +300,7 @@
     <string name="diag_export">导出日志</string>
     <string name="diag_export_desc">反馈问题时附上，便于定位原因</string>
     <string name="diag_export_title">导出日志</string>
-    <string name="diag_export_body">日志包含：应用版本、设备型号与 Android 版本、SoC / ABI、当前模型名与加载参数（GPU 档位、线程、上下文）、朗读引擎、主要设置，以及本应用的运行日志和崩溃记录。\n\n不包含原文和译文内容（只记录长度），也不包含术语表条目和翻译历史。可以先保存到文件查看后再发送。</string>
+    <string name="diag_export_body">日志包含：应用版本、设备型号与 Android 版本、SoC / ABI、当前模型名与加载参数（GPU 档位、线程、上下文）、朗读引擎、主要设置，以及本应用的运行日志和崩溃记录（原生崩溃只含解析出的摘要和 backtrace，不附带原始墓碑文件）。\n\n不包含原文和译文内容（只记录长度），也不包含术语表条目和翻译历史。可以先保存到文件查看后再发送。</string>
     <string name="diag_share">分享</string>
     <string name="diag_save">保存到文件</string>
     <string name="diag_cancel">取消</string>
@@ -312,4 +312,25 @@
     <string name="diag_clear_body">本机保存的运行日志和崩溃记录将被删除，无法恢复。</string>
     <string name="diag_clear_confirm">清空</string>
     <string name="diag_cleared">日志已清空</string>
+    <string name="diag_native">原生崩溃记录</string>
+    <string name="diag_native_unsupported">系统版本不支持（需要 Android 12 及以上）</string>
+    <string name="diag_native_loading">读取中…</string>
+    <string name="diag_native_empty">暂无原生崩溃记录。若 App 在模型推理等原生代码中崩溃，下次启动时会自动记录在这里</string>
+    <string name="diag_native_summary">最近 %1$d 次 · 最新 %2$s</string>
+    <string name="diag_native_no_signal">无墓碑</string>
+    <string name="diag_native_fault">故障地址 %1$s</string>
+    <string name="diag_native_abort">中止信息：%1$s</string>
+    <string name="diag_native_cause">原因：%1$s</string>
+    <string name="diag_native_thread">崩溃线程：%1$s</string>
+    <string name="diag_native_no_backtrace">（无 backtrace）</string>
+    <string name="diag_native_tap_hint">点按查看 backtrace</string>
+    <string name="diag_native_clear">清除记录</string>
+    <string name="diag_native_clear_title">清除原生崩溃记录？</string>
+    <string name="diag_native_clear_body">本机保存的原生崩溃记录（含原始墓碑文件）将被删除，已清除的崩溃不会再次出现。</string>
+    <string name="diag_native_cleared">原生崩溃记录已清除</string>
+    <string name="diag_debug_crash">触发原生崩溃（仅调试版）</string>
+    <string name="diag_debug_crash_desc">向本进程发送 SIGSEGV，用于验证原生崩溃记录</string>
+    <string name="diag_debug_crash_title">触发原生崩溃？</string>
+    <string name="diag_debug_crash_body">App 会立即闪退。重新打开后，「原生崩溃记录」里应出现一条 SIGSEGV。</string>
+    <string name="diag_debug_crash_confirm">崩溃</string>
 </resources>

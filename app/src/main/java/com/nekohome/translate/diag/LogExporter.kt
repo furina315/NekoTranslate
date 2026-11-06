@@ -23,19 +23,38 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
- * 设置 → 诊断 → 导出日志: builds one plain-text file (device / app / model header, the persistent
- * ring log, this process's logcat) and hands it to the share sheet or a file the user picked.
+ * 设置 → 诊断 → 导出日志: builds one plain-text `.log` file (device / app / model header, recent
+ * native crashes parsed from their tombstones, the persistent ring log, this process's logcat) and
+ * hands it to the share sheet or a file the user picked.
+ *
+ * Raw tombstones are deliberately not attached: they carry register / memory dumps and log buffers
+ * that cannot be scrubbed, so only the parsed summary and backtrace are exported.
  */
 object LogExporter {
 
     private const val EXPORT_DIR = "export"
+
+    /** MIME of the shared `.log` (ACTION_SEND type; [LogFileProvider] reports it for the URI too). */
+    const val LOG_MIME = "text/plain"
+
+    /**
+     * MIME given to ACTION_CREATE_DOCUMENT. Not text/plain: the platform MIME map has no ".log"
+     * entry, so providers would append ".txt" to a text/plain document named "….log".
+     */
+    const val SAVE_MIME = "application/octet-stream"
     private const val MAX_LOGCAT_CHARS = 1_500_000
 
     /** Builds the report text (IO thread). */
     suspend fun buildReport(context: Context, settings: AppSettings): String = withContext(Dispatchers.IO) {
         val app = context.applicationContext
-        val header = DiagnosticsReport.header(collect(app, settings))
-        DiagnosticsReport.assemble(header, AppLog.readPersistent(), readLogcat())
+        val crashes = if (NativeCrashCollector.supported) NativeCrashCollector.store(app).list() else emptyList()
+        val header = DiagnosticsReport.header(collect(app, settings, crashes))
+        DiagnosticsReport.assemble(
+            header,
+            AppLog.readPersistent(),
+            readLogcat(),
+            NativeCrashText.reportSection(crashes, NativeCrashCollector.supported),
+        )
     }
 
     /** Writes [text] to cache/export/ (older exports removed) and returns the file (IO thread). */
@@ -48,7 +67,7 @@ object LogExporter {
     fun shareIntent(context: Context, file: File): Intent {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
+            type = LOG_MIME
             putExtra(Intent.EXTRA_STREAM, uri)
             putExtra(Intent.EXTRA_SUBJECT, file.name)
             clipData = ClipData.newRawUri(file.name, uri)
@@ -86,7 +105,7 @@ object LogExporter {
         }
     }
 
-    private suspend fun collect(app: Context, s: AppSettings): DiagInfo {
+    private suspend fun collect(app: Context, s: AppSettings, crashes: List<NativeCrashRecord>): DiagInfo {
         val session = ModelSession.get(app)
         val loaded = session.loaded.value
         val model = loaded?.let { l ->
@@ -158,6 +177,11 @@ object LogExporter {
             ttsEffective = effective,
             settings = settingsSummary(s),
             persistentLogBytes = AppLog.persistentBytes(),
+            nativeCrashSummary = when {
+                !NativeCrashCollector.supported -> "系统版本不支持"
+                crashes.isEmpty() -> "无"
+                else -> "${crashes.size} 条（最近 ${LogFormat.timestamp(crashes.first().timestampMs)}）"
+            },
         )
     }
 

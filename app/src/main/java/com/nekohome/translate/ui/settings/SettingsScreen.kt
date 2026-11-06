@@ -68,6 +68,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
 import com.nekohome.translate.diag.LogExporter
+import com.nekohome.translate.diag.NativeCrashCollector
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -95,7 +97,7 @@ import com.nekohome.translate.ui.tts.ttsEngineSummary
 import com.nekohome.translate.tts.SpeechPlan
 import com.nekohome.translate.tts.TtsEngineChoice
 
-private enum class SettingsDialog { THEME, TARGET, TTS_ENGINE, TTS_TUNE, EXPORT_LOG, CLEAR_LOG }
+private enum class SettingsDialog { THEME, TARGET, TTS_ENGINE, TTS_TUNE, EXPORT_LOG, CLEAR_LOG, CLEAR_NATIVE, DEBUG_CRASH }
 
 @Composable
 fun SettingsScreen(
@@ -118,8 +120,13 @@ fun SettingsScreen(
     val exportFailed = stringResource(R.string.diag_export_failed)
     val savedText = stringResource(R.string.diag_saved)
     val clearedText = stringResource(R.string.diag_cleared)
+    val nativeClearedText = stringResource(R.string.diag_native_cleared)
+    val nativeCrashes by vm.nativeCrashes.collectAsStateWithLifecycle()
     // 「保存到文件」: the system file picker creates the document, then the report is written into it.
-    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+    // The content is plain text, but the picker is asked for application/octet-stream on purpose:
+    // Android's MIME map has no entry for ".log", so with "text/plain" the storage provider would
+    // rename the file to "….log.txt".
+    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(LogExporter.SAVE_MIME)) { uri ->
         if (uri == null) {
             exporting = false
             return@rememberLauncherForActivityResult
@@ -261,6 +268,15 @@ fun SettingsScreen(
                 summary = stringResource(R.string.diag_clear_desc),
                 onClick = { dialog = SettingsDialog.CLEAR_LOG },
             )
+            NativeCrashSection(state = nativeCrashes, onClear = { dialog = SettingsDialog.CLEAR_NATIVE })
+            if (BuildConfig.DEBUG && NativeCrashCollector.supported) {
+                SettingItem(
+                    icon = Icons.Outlined.BugReport,
+                    title = stringResource(R.string.diag_debug_crash),
+                    summary = stringResource(R.string.diag_debug_crash_desc),
+                    onClick = { dialog = SettingsDialog.DEBUG_CRASH },
+                )
+            }
 
             SectionHeader(stringResource(R.string.settings_section_about))
             SettingItem(
@@ -355,6 +371,33 @@ fun SettingsScreen(
                 }
             },
             onDismiss = { dialog = null },
+        )
+        SettingsDialog.CLEAR_NATIVE -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text(stringResource(R.string.diag_native_clear_title)) },
+            text = { Text(stringResource(R.string.diag_native_clear_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    dialog = null
+                    scope.launch {
+                        vm.clearNativeCrashes()
+                        Toast.makeText(context, nativeClearedText, Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text(stringResource(R.string.diag_clear_confirm)) }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text(stringResource(R.string.diag_cancel)) } },
+        )
+        SettingsDialog.DEBUG_CRASH -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text(stringResource(R.string.diag_debug_crash_title)) },
+            text = { Text(stringResource(R.string.diag_debug_crash_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    dialog = null
+                    if (BuildConfig.DEBUG) NativeCrashCollector.crashForTesting()
+                }) { Text(stringResource(R.string.diag_debug_crash_confirm)) }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text(stringResource(R.string.diag_cancel)) } },
         )
         SettingsDialog.CLEAR_LOG -> AlertDialog(
             onDismissRequest = { dialog = null },
