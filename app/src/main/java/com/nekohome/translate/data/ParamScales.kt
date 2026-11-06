@@ -42,7 +42,7 @@ object ParamScales {
     /** Top-k stops: fine at the low end where it matters, coarse above. 0 = off. */
     val TOP_K_STOPS = listOf(0, 1, 5, 10, 20, 30, 40, 50, 64, 80, 100)
 
-    val MAX_TOKEN_OPTIONS = listOf(256, 512, 1024, 2048, 4096, 8192)
+    val MAX_TOKEN_OPTIONS = listOf(256, 512, 1024, 2048, 4096, 8192, 16384)
     val CONTEXT_OPTIONS = listOf(1024, 2048, 4096, 8192, 16384, 32768)
 
     /** Index of the option closest to [value] (ties go to the smaller option). */

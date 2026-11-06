@@ -98,6 +98,14 @@
     <string name="models_load_info_gpu_fallback"> · GPU 加载失败，已用 CPU</string>
     <string name="models_reload">重新加载</string>
     <string name="models_runtime_info">运行时信息</string>
+    <string name="models_official_verified">官方文件 · %1$s · SHA-256 已校验</string>
+    <string name="models_official_size">与官方 %1$s 文件大小一致（导入时未校验 SHA-256，重新导入可校验）</string>
+    <string name="models_official_mismatch">大小与官方 %1$s 一致但 SHA-256 不符，可能被修改或损坏（仍可照常使用）</string>
+    <string name="models_builtin_nativelong_title">内置档案：Index-NativeLong-2B</string>
+    <string name="models_builtin_nativelong_body">B 站 Index 团队的长文档翻译模型：整篇一次翻译，全文保持人名和术语一致，官方模板覆盖中↔英、中↔日。导入后自动识别，默认 16K 上下文，放不下时自动分块。</string>
+    <string name="models_builtin_nativelong_repo">官方仓库：%1$s（Hugging Face，推荐 %2$s，约 1.27 GB）。自行下载后点右上角 + 导入。</string>
+    <string name="msg_imported_official">已导入 %1$s（%2$s · 官方文件，SHA-256 已校验）</string>
+    <string name="msg_imported_mismatch">已导入 %1$s（%2$s）。与官方 %3$s 的 SHA-256 不一致，仍可照常使用</string>
     <string name="models_section_expand">展开</string>
     <string name="models_section_collapse">收起</string>
     <string name="models_decrease">减小</string>

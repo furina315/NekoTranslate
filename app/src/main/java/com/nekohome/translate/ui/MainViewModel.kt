@@ -27,6 +27,7 @@ import com.nekohome.translate.data.ModelParams
 import com.nekohome.translate.data.ModelParamsStore
 import com.nekohome.translate.data.ModelProfile
 import com.nekohome.translate.data.ModelRepository
+import com.nekohome.translate.data.OfficialStatus
 import com.nekohome.translate.data.SettingsRepository
 import com.nekohome.translate.engine.GenerationEvent
 import com.nekohome.translate.engine.ImageLoader
@@ -164,7 +165,7 @@ data class MainUiState(
     fun needsReload(model: LocalModel): Boolean {
         val l = loaded ?: return false
         if (l.path != model.file.absolutePath) return false
-        return ModelParams.needsReload(l.params, paramsFor(model).loadParams(gpu.usable))
+        return ModelParams.needsReload(l.params, paramsFor(model).loadParams(profileFor(model), gpu.usable))
     }
 }
 
@@ -334,9 +335,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 when (val result = repository.import(uri) { p -> _state.update { it.copy(importProgress = p) } }) {
                     is ImportResult.Model -> {
                         val model = result.model
-                        _state.update {
-                            it.copy(importProgress = null, message = str(R.string.msg_imported, model.fileName, model.profile.displayName))
+                        val official = model.official
+                        val msg = when (official?.status) {
+                            OfficialStatus.VERIFIED -> str(R.string.msg_imported_official, model.fileName, model.profile.displayName)
+                            OfficialStatus.MISMATCH ->
+                                str(R.string.msg_imported_mismatch, model.fileName, model.profile.displayName, official.file.fileName)
+                            else -> str(R.string.msg_imported, model.fileName, model.profile.displayName)
                         }
+                        _state.update { it.copy(importProgress = null, message = msg) }
                         refreshModels(selectPath = model.file.absolutePath)
                     }
                     is ImportResult.Projector -> {
@@ -370,7 +376,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadModelInternal(model: LocalModel) {
         run {
             paramsReady.await()
-            val params = _state.value.paramsFor(model).loadParams(_state.value.gpu.usable)
+            val params = _state.value.let { it.paramsFor(model).loadParams(it.profileFor(model), it.gpu.usable) }
             _state.update {
                 it.copy(loadingPath = model.file.absolutePath, selectedPath = model.file.absolutePath, message = null)
             }

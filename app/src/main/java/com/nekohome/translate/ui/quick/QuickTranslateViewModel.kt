@@ -167,7 +167,7 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
                 val p = allParams[target.fileName] ?: ModelParams()
                 val gpuUsable = runCatching { session.gpuState().usable }.getOrDefault(false)
                 try {
-                    withTicker { session.load(target.file, p.loadParams(gpuUsable)) }
+                    withTicker { session.load(target.file, p.loadParams(p.profile(target.profile), gpuUsable)) }
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
                     AppLog.e(TAG, "quick card: auto-load of ${target.fileName} failed", t)

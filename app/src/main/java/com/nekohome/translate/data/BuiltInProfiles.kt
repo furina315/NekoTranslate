@@ -101,6 +101,54 @@ object BuiltInProfiles {
     )
 
     // ---------------------------------------------------------------------------------------------
+    // Index-NativeLong (bilibili Index team), the family's long-document specialist. Published as
+    // IndexTeam/Index-Nailong-2B / -9B; official GGUFs in IndexTeam/Index-Nailong-2B-GGUF
+    // (general.architecture "qwen35", general.name "Index Nailong 2B", context_length 262144).
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Same chat template (Qwen3.5, thinking off), languages, image prompt and instTrans glossary
+     * format as Index-Translate. On top of that:
+     *  - zh-en / en-zh / zh-ja / ja-zh use the official fixed document templates
+     *    (inference/llm/prompts/nailong_<direction>.txt), other pairs Index-Translate's prompt;
+     *  - the whole text goes in one generation when it fits (TranslationPlanner);
+     *  - doc_translate.py decodes greedily (temperature 0, top_p 1, top_k -1, min_p 0,
+     *    repetition_penalty 1) and omits max_tokens. Here max_tokens defaults to 8192 so the
+     *    parameter stays a visible choice; the context window caps it anyway.
+     *  - The shipped serving limit is 262144 tokens, far beyond a phone: n_ctx defaults to 16K
+     *    (KV cache ≈ 12 KB/token on the 2B: 6 full-attention layers × 2 KV heads × 256 dims × f16
+     *    × K+V, so ≈ 192 MB at 16K, ≈ 384 MB at 32K).
+     */
+    val INDEX_NATIVELONG = INDEX_TRANSLATE.copy(
+        id = "index-nativelong",
+        displayName = "Index-NativeLong (Nailong 2B / 9B)",
+        matchRule = MatchRule(
+            architectures = setOf("qwen35"),
+            namePattern = Regex("nai[-_ ]?long|native[-_ ]?long", RegexOption.IGNORE_CASE),
+        ),
+        documentPrompt = NativeLongPrompts,
+        wholeDocument = true,
+        defaultContext = 16384,
+        tags = listOf("长文档 / 整篇翻译"),
+        sampling = SamplingParams(
+            temperature = 0f,
+            topP = 1f,
+            topK = 0,
+            minP = 0f,
+            repeatPenalty = 1f,
+            maxTokens = 8192,
+        ),
+        sourceUrls = listOf(
+            "https://huggingface.co/IndexTeam/Index-Nailong-2B",
+            "https://huggingface.co/IndexTeam/Index-Nailong-2B-GGUF",
+            "https://github.com/bilibili/Index-Translate/blob/main/inference/llm/doc_translate.py",
+            "https://github.com/bilibili/Index-Translate/tree/main/inference/llm/prompts",
+        ),
+        notes = "Long-document translation. Thinking disabled; review long outputs for omissions or repetition " +
+            "(the model card notes repeated passages in some 2B outputs).",
+    )
+
+    // ---------------------------------------------------------------------------------------------
     // Hy-MT2 (Tencent Hunyuan), 1.8B / 7B, GGUF arch "hunyuan-dense".
     // ---------------------------------------------------------------------------------------------
 
@@ -220,7 +268,7 @@ object BuiltInProfiles {
         isCustom = true,
     )
 
-    val ALL: List<ModelProfile> = listOf(INDEX_TRANSLATE, HY_MT2, CUSTOM)
+    val ALL: List<ModelProfile> = listOf(INDEX_TRANSLATE, INDEX_NATIVELONG, HY_MT2, CUSTOM)
 
     fun byId(id: String?): ModelProfile? = ALL.firstOrNull { it.id == id }
 

@@ -12,6 +12,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Verified
 import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.LinkOff
@@ -39,6 +42,7 @@ import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -68,7 +72,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nekohome.translate.R
+import com.nekohome.translate.data.BuiltInProfiles
 import com.nekohome.translate.data.LocalModel
+import com.nekohome.translate.data.OfficialFiles
+import com.nekohome.translate.data.OfficialMatch
+import com.nekohome.translate.data.OfficialStatus
 import com.nekohome.translate.ui.MainUiState
 import com.nekohome.translate.ui.MainViewModel
 import com.nekohome.translate.ui.common.Format
@@ -139,6 +147,8 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
                     isTranslating = state.isTranslating,
                     manualProfile = params.profileId != null,
                     profileName = state.profileFor(model).displayName,
+                    profileTags = state.profileFor(model).tags,
+                    official = model.official,
                     loadInfo = if (state.isLoaded(model)) state.loadInfo else "",
                     mmprojName = state.mmprojFor(model),
                     mmprojSize = state.mmprojFor(model)?.let { state.mmprojFiles[it] },
@@ -154,6 +164,13 @@ fun ModelsScreen(state: MainUiState, vm: MainViewModel) {
                     onUnload = vm::unloadModel,
                     onDelete = { pendingDelete = model },
                 )
+            }
+
+            // Built-in long-document profile: where to find the official file (text only, no download).
+            if (state.models.none { state.profileFor(it).id == BuiltInProfiles.INDEX_NATIVELONG.id }) {
+                item(key = "builtin-nativelong", contentType = "builtin") {
+                    Box(springItem()) { BuiltInProfileCard() }
+                }
             }
 
             val selected = state.selectedModel
@@ -336,6 +353,8 @@ private fun ModelCard(
     isTranslating: Boolean,
     manualProfile: Boolean,
     profileName: String,
+    profileTags: List<String>,
+    official: OfficialMatch?,
     loadInfo: String,
     mmprojName: String?,
     mmprojSize: Long?,
@@ -397,6 +416,12 @@ private fun ModelCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (profileTags.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+                    profileTags.forEach { TagChip(it) }
+                }
+            }
+            if (official != null) OfficialLine(official)
             if (isLoaded && loadInfo.isNotEmpty()) {
                 Text(
                     loadInfo,
@@ -487,6 +512,98 @@ private fun MmprojRow(
         } else {
             TextButton(onClick = onAttach, enabled = enabled, interactionSource = src, modifier = Modifier.bounceClick(src)) {
                 Text(stringResource(R.string.models_mmproj_attach))
+            }
+        }
+    }
+}
+
+/** A small tonal label for what a profile is for (e.g. 长文档 / 整篇翻译). */
+@Composable
+private fun TagChip(text: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+    }
+}
+
+/** How the file compares with the official release; purely informational. */
+@Composable
+private fun OfficialLine(match: OfficialMatch) {
+    val verified = match.status == OfficialStatus.VERIFIED
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+        if (verified) {
+            Icon(
+                Icons.Outlined.Verified,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(4.dp))
+        }
+        Text(
+            when (match.status) {
+                OfficialStatus.VERIFIED -> stringResource(R.string.models_official_verified, match.file.quant)
+                OfficialStatus.SIZE_MATCH -> stringResource(R.string.models_official_size, match.file.quant)
+                OfficialStatus.MISMATCH -> stringResource(R.string.models_official_mismatch, match.file.quant)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = when (match.status) {
+                OfficialStatus.VERIFIED -> MaterialTheme.colorScheme.primary
+                OfficialStatus.SIZE_MATCH -> MaterialTheme.colorScheme.onSurfaceVariant
+                OfficialStatus.MISMATCH -> MaterialTheme.colorScheme.error
+            },
+        )
+    }
+}
+
+/**
+ * The built-in long-document profile and where its official GGUF lives. Plain selectable text on
+ * purpose: the app has no network access and offers no download.
+ */
+@Composable
+private fun BuiltInProfileCard() {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.Description,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    stringResource(R.string.models_builtin_nativelong_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                TagChip(BuiltInProfiles.INDEX_NATIVELONG.tags.first())
+            }
+            Text(
+                stringResource(R.string.models_builtin_nativelong_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SelectionContainer {
+                Text(
+                    stringResource(
+                        R.string.models_builtin_nativelong_repo,
+                        OfficialFiles.NAILONG_2B_REPO,
+                        OfficialFiles.NAILONG_2B_RECOMMENDED,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
             }
         }
     }

@@ -82,6 +82,20 @@ data class ModelProfile(
     val isCustom: Boolean = false,
     /** Model was trained on the 【约束要求】 prompt (Index-Translate): glossary terms go in as hard constraints. */
     val supportsConstraints: Boolean = false,
+    /**
+     * Fixed whole-document prompt for the directions it covers (Index-NativeLong); other
+     * directions use the prompts above.
+     */
+    val documentPrompt: DocumentPrompt? = null,
+    /**
+     * Long-document model: translate the whole text in one generation when it fits the context
+     * (TranslationPlanner), falling back to large chunks otherwise.
+     */
+    val wholeDocument: Boolean = false,
+    /** Context length when the user has not set one; `null` = ModelParams.DEFAULT_CONTEXT. */
+    val defaultContext: Int? = null,
+    /** Short use labels shown on the model card, e.g. 长文档 / 整篇翻译. */
+    val tags: List<String> = emptyList(),
 ) {
     fun findLanguage(code: String): Language? =
         if (code == Language.AUTO_CODE) Language.AUTO else languages.firstOrNull { it.code == code }
@@ -89,6 +103,7 @@ data class ModelProfile(
     /** Builds the user message (before chat formatting). */
     fun buildUserPrompt(source: Language, target: Language, text: String, terms: List<GlossaryEntry> = emptyList()): String {
         val trimmed = text.trim()
+        documentPrompt?.render(source, target, trimmed, terms)?.let { return it }
         if (terms.isNotEmpty() && supportsConstraints && promptLocale == PromptLocale.ZH) {
             return buildConstraintPrompt(source, target, trimmed, terms)
         }

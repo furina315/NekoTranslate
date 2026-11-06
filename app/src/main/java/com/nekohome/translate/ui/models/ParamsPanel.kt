@@ -92,7 +92,7 @@ fun ParamsPanel(model: LocalModel, state: MainUiState, vm: MainViewModel) {
     val params = state.paramsFor(model)
     val profile = state.profileFor(model)
     val sampling = params.sampling(profile)
-    val load = params.loadParams(state.gpu.usable)
+    val load = params.loadParams(profile, state.gpu.usable)
     val busy = state.isLoading || state.isTranslating
     val reduceMotion = LocalReduceMotion.current
 
