@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import com.nekohome.translate.diag.AppLog
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
@@ -51,7 +52,12 @@ enum class QuickPhase { PREPARING, WAITING_FOR_LOAD, LOADING_MODEL, QUEUED, TRAN
 @Immutable
 data class QuickUiState(
     val source: String = "",
+    /** Length of the text that arrived (> source.length when it was over IncomingText.MAX_CHARS). */
+    val originalLength: Int = 0,
     val replaceable: Boolean = false,
+    /** Long-text progress: segment [segment] of [segmentCount] (0 = not segmented / not running). */
+    val segment: Int = 0,
+    val segmentCount: Int = 0,
     val phase: QuickPhase = QuickPhase.PREPARING,
     /** Model being loaded / used (display name). */
     val modelName: String? = null,
@@ -64,6 +70,7 @@ data class QuickUiState(
     val message: String? = null,
 ) {
     val target: Language? get() = targets.firstOrNull { it.code == targetCode }
+    val truncated: Boolean get() = originalLength > source.length
     val isBusy: Boolean
         get() = phase == QuickPhase.PREPARING || phase == QuickPhase.WAITING_FOR_LOAD ||
             phase == QuickPhase.LOADING_MODEL || phase == QuickPhase.QUEUED || phase == QuickPhase.TRANSLATING
@@ -104,7 +111,7 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
     fun start(request: QuickRequest) {
         if (started) return
         started = true
-        _state.update { it.copy(source = request.text, replaceable = request.replaceable) }
+        _state.update { it.copy(source = request.text, originalLength = request.originalLength, replaceable = request.replaceable) }
         viewModelScope.launch {
             val list = withContext(Dispatchers.IO) { queryTtsEngines(getApplication()) }
             val st = settingsRepository.settings.first()
@@ -124,12 +131,13 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
         speaker.stop()
         job = viewModelScope.launch {
             _output.value = ""
-            _state.update { it.copy(phase = QuickPhase.PREPARING, message = null) }
+            _state.update { it.copy(phase = QuickPhase.PREPARING, message = null, segment = 0, segmentCount = 0) }
             try {
                 if (!ensureModel()) return@launch
                 translate()
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
+                AppLog.e(TAG, "quick translation failed", t)
                 _state.update { it.copy(phase = QuickPhase.FAILED, message = str(R.string.quick_translate_failed, t.message ?: t.javaClass.simpleName)) }
             }
         }
@@ -138,6 +146,8 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
     /** True once a model is loaded in the shared session (loading it when needed). */
     private suspend fun ensureModel(): Boolean {
         val models = repository.listModels()
+        // Read once: used for the auto-load and for the loaded model's sampling parameters.
+        val allParams = paramsStore.loadAll()
         val decision = AutoLoadPolicy.decide(
             loadedPath = session.loaded.value?.path,
             loadingPath = session.loadingPath.value,
@@ -154,12 +164,13 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
             is AutoLoadDecision.Load -> {
                 val target = models.first { it.fileName == decision.fileName }
                 _state.update { it.copy(phase = QuickPhase.LOADING_MODEL, modelName = target.file.nameWithoutExtension, loadSeconds = 0) }
-                val p = paramsStore.loadAll()[target.fileName] ?: ModelParams()
+                val p = allParams[target.fileName] ?: ModelParams()
                 val gpuUsable = runCatching { session.gpuState().usable }.getOrDefault(false)
                 try {
-                    withTicker { session.load(target.file, p.loadParams(gpuUsable)) }
+                    withTicker { session.load(target.file, p.loadParams(p.profile(target.profile), gpuUsable)) }
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
+                    AppLog.e(TAG, "quick card: auto-load of ${target.fileName} failed", t)
                     _state.update { it.copy(phase = QuickPhase.FAILED, message = str(R.string.quick_load_failed, t.message ?: "")) }
                     return false
                 }
@@ -170,13 +181,14 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         val loaded = session.loaded.value
-        val m = loaded?.let { l -> repository.listModels().firstOrNull { it.file.absolutePath == l.path } }
+        // The model list read above still holds (a load does not add files); no second header scan.
+        val m = loaded?.let { l -> models.firstOrNull { it.file.absolutePath == l.path } }
         if (m == null) {
             _state.update { it.copy(phase = QuickPhase.NO_MODEL, message = str(R.string.quick_no_model)) }
             return false
         }
         model = m
-        params = paramsStore.loadAll()[m.fileName] ?: ModelParams()
+        params = allParams[m.fileName] ?: ModelParams()
         val profile = params.profile(m.profile)
         val settings = settingsRepository.settings.first()
         val wanted = _state.value.targetCode.takeIf { _state.value.targets.isNotEmpty() }
@@ -228,7 +240,10 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
             when (ev) {
                 is GenerationEvent.Stage -> Unit
                 is GenerationEvent.Partial -> {
-                    if (_state.value.phase != QuickPhase.TRANSLATING) _state.update { it.copy(phase = QuickPhase.TRANSLATING) }
+                    val cur = _state.value
+                    if (cur.phase != QuickPhase.TRANSLATING || cur.segment != ev.segment || cur.segmentCount != ev.segmentCount) {
+                        _state.update { it.copy(phase = QuickPhase.TRANSLATING, segment = ev.segment, segmentCount = ev.segmentCount) }
+                    }
                     _output.value = ev.text
                 }
                 is GenerationEvent.Done -> {
@@ -244,9 +259,11 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
                             modelName = m.file.nameWithoutExtension,
                             createdAt = System.currentTimeMillis(),
                         )
-                        viewModelScope.launch { runCatching { history.add(entry) } }
+                        viewModelScope.launch {
+                            runCatching { history.add(entry) }.onFailure { AppLog.w(TAG, "saving history failed", it) }
+                        }
                     }
-                    _state.update { it.copy(phase = QuickPhase.DONE, message = ev.stats.errorMessage()) }
+                    _state.update { it.copy(phase = QuickPhase.DONE, message = ev.stats.errorMessage(), segment = 0, segmentCount = 0) }
                 }
             }
         }
@@ -303,6 +320,7 @@ class QuickTranslateViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val OUTPUT_FRAME_MS = 33L
+        const val TAG = "NekoQuick"
         val SEQ = AtomicInteger()
     }
 }

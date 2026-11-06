@@ -18,7 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -100,7 +100,7 @@ fun GlossaryScreen(settings: AppSettings, vm: SettingsViewModel, onBack: () -> U
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Icon(
-                        Icons.Outlined.MenuBook, contentDescription = null,
+                        Icons.AutoMirrored.Outlined.MenuBook, contentDescription = null,
                         modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.outline,
                     )
                     Spacer(Modifier.height(12.dp))

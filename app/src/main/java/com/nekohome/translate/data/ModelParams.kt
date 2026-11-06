@@ -66,12 +66,17 @@ data class ModelParams(
         gpuUsable: Boolean = false,
         defaultThreads: Int = LoadParams.defaultThreads(),
         defaultBatchThreads: Int = LoadParams.defaultBatchThreads(),
+        defaultContext: Int = DEFAULT_CONTEXT,
     ): LoadParams = LoadParams(
-        nCtx = nCtx ?: DEFAULT_CONTEXT,
+        nCtx = nCtx ?: defaultContext,
         nThreads = nThreads ?: defaultThreads,
         nThreadsBatch = nThreads ?: defaultBatchThreads,
         gpuMode = effectiveGpuMode(gpuUsable),
     )
+
+    /** [loadParams] with the context default of [profile] (the effective profile, see [profile]). */
+    fun loadParams(profile: ModelProfile, gpuUsable: Boolean = false): LoadParams =
+        loadParams(gpuUsable, defaultContext = profile.defaultContext ?: DEFAULT_CONTEXT)
 
     /** The GPU mode the next load will use. */
     fun effectiveGpuMode(gpuUsable: Boolean): GpuMode = if (gpuUsable) gpuMode ?: GpuMode.OFF else GpuMode.OFF

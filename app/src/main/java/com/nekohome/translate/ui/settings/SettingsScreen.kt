@@ -37,7 +37,10 @@ import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Memory
@@ -45,7 +48,6 @@ import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.SettingsVoice
 import androidx.compose.material.icons.outlined.Smartphone
-import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -59,6 +61,16 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
+import com.nekohome.translate.diag.LogExporter
+import com.nekohome.translate.diag.NativeCrashCollector
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -84,9 +96,8 @@ import com.nekohome.translate.ui.tts.rateLabel
 import com.nekohome.translate.ui.tts.ttsEngineSummary
 import com.nekohome.translate.tts.SpeechPlan
 import com.nekohome.translate.tts.TtsEngineChoice
-import androidx.compose.material.icons.outlined.Speed
 
-private enum class SettingsDialog { THEME, TARGET, TTS_ENGINE, TTS_TUNE }
+private enum class SettingsDialog { THEME, TARGET, TTS_ENGINE, TTS_TUNE, EXPORT_LOG, CLEAR_LOG, CLEAR_NATIVE, DEBUG_CRASH }
 
 @Composable
 fun SettingsScreen(
@@ -104,6 +115,28 @@ fun SettingsScreen(
         ?.let { "${it.nameZh} · ${it.nameEn}" } ?: settings.defaultTargetCode
     val githubUrl = stringResource(R.string.settings_github_url)
     val noBrowser = stringResource(R.string.settings_no_browser)
+    val scope = rememberCoroutineScope()
+    var exporting by remember { mutableStateOf(false) }
+    val exportFailed = stringResource(R.string.diag_export_failed)
+    val savedText = stringResource(R.string.diag_saved)
+    val clearedText = stringResource(R.string.diag_cleared)
+    val nativeClearedText = stringResource(R.string.diag_native_cleared)
+    val nativeCrashes by vm.nativeCrashes.collectAsStateWithLifecycle()
+    // 「保存到文件」: the system file picker creates the document, then the report is written into it.
+    // The content is plain text, but the picker is asked for application/octet-stream on purpose:
+    // Android's MIME map has no entry for ".log", so with "text/plain" the storage provider would
+    // rename the file to "….log.txt".
+    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(LogExporter.SAVE_MIME)) { uri ->
+        if (uri == null) {
+            exporting = false
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            val ok = runCatching { LogExporter.writeTo(context, uri, vm.buildLogReport()) }.isSuccess
+            exporting = false
+            Toast.makeText(context, if (ok) savedText else exportFailed, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     Scaffold(topBar = { TopAppBar(title = { Text(stringResource(R.string.settings_title)) }) }) { padding ->
         Column(
@@ -173,7 +206,7 @@ fun SettingsScreen(
             )
 
             SettingItem(
-                icon = Icons.Outlined.MenuBook,
+                icon = Icons.AutoMirrored.Outlined.MenuBook,
                 title = stringResource(R.string.settings_glossary),
                 summary = if (settings.glossary.isEmpty()) stringResource(R.string.settings_glossary_desc)
                 else if (settings.glossaryEnabled) stringResource(R.string.settings_glossary_count, settings.glossary.size)
@@ -218,6 +251,30 @@ fun SettingsScreen(
                         vm.setChineseVoiceHintDismissed(false)
                         Toast.makeText(context, hintResetText, Toast.LENGTH_SHORT).show()
                     },
+                )
+            }
+
+            SectionHeader(stringResource(R.string.settings_section_diag))
+            SettingItem(
+                icon = Icons.Outlined.BugReport,
+                title = stringResource(R.string.diag_export),
+                summary = stringResource(R.string.diag_export_desc),
+                trailing = if (exporting) ({ CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }) else null,
+                onClick = { if (!exporting) dialog = SettingsDialog.EXPORT_LOG },
+            )
+            SettingItem(
+                icon = Icons.Outlined.DeleteSweep,
+                title = stringResource(R.string.diag_clear),
+                summary = stringResource(R.string.diag_clear_desc),
+                onClick = { dialog = SettingsDialog.CLEAR_LOG },
+            )
+            NativeCrashSection(state = nativeCrashes, onClear = { dialog = SettingsDialog.CLEAR_NATIVE })
+            if (BuildConfig.DEBUG && NativeCrashCollector.supported) {
+                SettingItem(
+                    icon = Icons.Outlined.BugReport,
+                    title = stringResource(R.string.diag_debug_crash),
+                    summary = stringResource(R.string.diag_debug_crash_desc),
+                    onClick = { dialog = SettingsDialog.DEBUG_CRASH },
                 )
             }
 
@@ -285,8 +342,98 @@ fun SettingsScreen(
             onPitch = vm::setTtsPitch,
             onDismiss = { dialog = null },
         )
+        SettingsDialog.EXPORT_LOG -> ExportLogDialog(
+            onShare = {
+                dialog = null
+                exporting = true
+                scope.launch {
+                    val intent = runCatching { LogExporter.shareIntent(context, vm.writeLogShareFile()) }.getOrNull()
+                    exporting = false
+                    if (intent == null) {
+                        Toast.makeText(context, exportFailed, Toast.LENGTH_SHORT).show()
+                    } else {
+                        try {
+                            context.startActivity(intent)
+                        } catch (e: ActivityNotFoundException) {
+                            Toast.makeText(context, exportFailed, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            },
+            onSave = {
+                dialog = null
+                exporting = true
+                try {
+                    saveLauncher.launch(LogExporter.suggestedFileName())
+                } catch (e: ActivityNotFoundException) {
+                    exporting = false
+                    Toast.makeText(context, exportFailed, Toast.LENGTH_SHORT).show()
+                }
+            },
+            onDismiss = { dialog = null },
+        )
+        SettingsDialog.CLEAR_NATIVE -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text(stringResource(R.string.diag_native_clear_title)) },
+            text = { Text(stringResource(R.string.diag_native_clear_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    dialog = null
+                    scope.launch {
+                        vm.clearNativeCrashes()
+                        Toast.makeText(context, nativeClearedText, Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text(stringResource(R.string.diag_clear_confirm)) }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text(stringResource(R.string.diag_cancel)) } },
+        )
+        SettingsDialog.DEBUG_CRASH -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text(stringResource(R.string.diag_debug_crash_title)) },
+            text = { Text(stringResource(R.string.diag_debug_crash_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    dialog = null
+                    if (BuildConfig.DEBUG) NativeCrashCollector.crashForTesting()
+                }) { Text(stringResource(R.string.diag_debug_crash_confirm)) }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text(stringResource(R.string.diag_cancel)) } },
+        )
+        SettingsDialog.CLEAR_LOG -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text(stringResource(R.string.diag_clear_title)) },
+            text = { Text(stringResource(R.string.diag_clear_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    dialog = null
+                    scope.launch {
+                        vm.clearLogs()
+                        Toast.makeText(context, clearedText, Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text(stringResource(R.string.diag_clear_confirm)) }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text(stringResource(R.string.diag_cancel)) } },
+        )
         null -> Unit
     }
+}
+
+/** What an export contains (privacy notice) + 分享 / 保存到文件. */
+@Composable
+private fun ExportLogDialog(onShare: () -> Unit, onSave: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.BugReport, contentDescription = null) },
+        title = { Text(stringResource(R.string.diag_export_title)) },
+        text = { Text(stringResource(R.string.diag_export_body)) },
+        confirmButton = { TextButton(onClick = onShare) { Text(stringResource(R.string.diag_share)) } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.diag_cancel)) }
+                TextButton(onClick = onSave) { Text(stringResource(R.string.diag_save)) }
+            }
+        },
+    )
 }
 
 @Composable

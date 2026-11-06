@@ -14,7 +14,10 @@ name: Release APKs
 #       pre-release "vX.Y.Z-nightly.N", versionName = tag without "v",
 #       versionCode = latest stable tag's code + N, notes = the annotated tag's message + template.
 #     * otherwise -> pre-release "nightly", deleted and re-created on every manual run so it always
-#       points at the commit just built (versionCode = latest stable tag + 1).
+#       points at the commit just built. versionCode = highest nightly tag after the latest stable
+#       one + 1 (e.g. after v0.3.0-nightly.6: 207), at least latest stable + 1, so this test build
+#       installs over the last nightly and the next nightly tag (same code) installs over it.
+#       versionName = that nightly series + "-nightly-<commit>" (e.g. 0.3.0-nightly-1a2b3c4).
 #     Choosing a v* tag in "Use workflow from" instead rebuilds that tag and replaces its release files.
 #
 # Note: GitHub skips tag pushes too when the tagged commit's message contains a skip-ci marker,
@@ -91,10 +94,22 @@ jobs:
           else
             tag="nightly"
             base=$(sed -nE 's/.*versionName = .*\?: "([0-9][^"]*)".*/\1/p' app/build.gradle.kts | head -1)
-            version="${base:-0.0.0}-nightly-${short}"
+            stable_code=$(code_of "${stable:-v$base}")
+            # Highest vX.Y.Z-nightly.N newer than the stable release: the rolling build must not be
+            # a downgrade from it (Android refuses to install a lower versionCode).
+            max_code=0
+            series=""
+            for t in $(git tag -l 'v*-nightly.*'); do
+              c=$(nightly_code "$t")
+              if [ -n "$c" ] && [ "$(code_of "$t")" -gt "$stable_code" ] && [ "$c" -gt "$max_code" ]; then
+                max_code=$c
+                series=$(echo "$t" | sed -nE 's/^v([0-9]+\.[0-9]+\.[0-9]+)-nightly\..*/\1/p')
+              fi
+            done
+            version="${series:-${base:-0.0.0}}-nightly-${short}"
             prerelease=true
-            # Latest stable tag + 1, so a nightly installs over the last release.
-            code=$(( $(code_of "${stable:-v$base}") + 1 ))
+            code=$(( stable_code + 1 ))
+            if [ "$max_code" -ge "$code" ]; then code=$(( max_code + 1 )); fi
           fi
           touch tag_message.md
           {

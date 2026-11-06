@@ -13,6 +13,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import com.nekohome.translate.diag.AppLog
+import com.nekohome.translate.diag.LogExporter
+import com.nekohome.translate.diag.NativeCrashCollector
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
 
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -58,5 +66,41 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun setTtsEngine(packageName: String) { viewModelScope.launch { repository.setTtsEngine(packageName) } }
     fun setChineseVoiceHintDismissed(dismissed: Boolean) {
         viewModelScope.launch { repository.setChineseVoiceHintDismissed(dismissed) }
+    }
+
+    // ------------------------------------------------------------------ 诊断
+
+    private val _nativeCrashes = MutableStateFlow(NativeCrashUiState(NativeCrashCollector.supported, null))
+
+    /** 设置 → 诊断 →「原生崩溃记录」; reloaded after the startup import and after a clear. */
+    val nativeCrashes: StateFlow<NativeCrashUiState> = _nativeCrashes.asStateFlow()
+
+    init {
+        if (NativeCrashCollector.supported) {
+            viewModelScope.launch {
+                NativeCrashCollector.version.collect {
+                    val list = withContext(Dispatchers.IO) {
+                        runCatching { NativeCrashCollector.store(getApplication()).list() }.getOrDefault(emptyList())
+                    }
+                    _nativeCrashes.value = NativeCrashUiState(true, list)
+                }
+            }
+        }
+    }
+
+    suspend fun clearNativeCrashes() = withContext(Dispatchers.IO) {
+        NativeCrashCollector.clear(getApplication())
+        AppLog.i(AppLog.TAG_APP, "native crash records cleared by the user")
+    }
+
+    /** Full export text (header + persistent log + logcat). */
+    suspend fun buildLogReport(): String = LogExporter.buildReport(getApplication(), settings.value)
+
+    /** Export written to the share cache (for ACTION_SEND through the FileProvider). */
+    suspend fun writeLogShareFile(): File = LogExporter.writeShareFile(getApplication(), buildLogReport())
+
+    suspend fun clearLogs() = withContext(Dispatchers.IO) {
+        AppLog.clear()
+        AppLog.i(AppLog.TAG_APP, "logs cleared by the user")
     }
 }

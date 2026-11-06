@@ -2,4 +2,6 @@
 <paths>
     <!-- Photos taken with the system camera for image translation; deleted after decoding. -->
     <cache-path name="camera" path="camera/" />
+    <!-- 设置 → 诊断 → 导出日志: the report shared through ACTION_SEND (replaced on every export). -->
+    <cache-path name="export" path="export/" />
 </paths>

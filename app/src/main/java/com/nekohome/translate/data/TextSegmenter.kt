@@ -93,6 +93,8 @@ object TextSegmenter {
                 if (c in "，,、：: ") { cut = k; break }
             }
             if (cut < 0) cut = max
+            // Never split a surrogate pair (emoji etc.): half of it would reach the model as U+FFFD.
+            if (Character.isHighSurrogate(rest[cut - 1]) && Character.isLowSurrogate(rest[cut])) cut--
             val piece = rest.substring(0, cut)
             val trimmed = piece.trimEnd()
             out.add(sep to trimmed)

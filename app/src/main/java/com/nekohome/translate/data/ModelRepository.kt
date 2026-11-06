@@ -9,6 +9,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 
 /** A GGUF file in app-private storage plus what we read from its header. */
 data class LocalModel(
@@ -19,6 +20,8 @@ data class LocalModel(
     val contextLength: Long?,
     val hasChatTemplate: Boolean,
     val profile: ModelProfile,
+    /** Comparison with the known official files (OfficialFiles); null = not an official size. */
+    val official: OfficialMatch? = null,
 ) {
     val fileName: String get() = file.name
     val sizeBytes: Long get() = file.length()
@@ -62,6 +65,7 @@ class ModelRepository(private val context: Context) {
     fun describe(file: File): LocalModel = describe(file, GgufMetadataReader.read(file))
 
     private fun describe(file: File, header: GgufMetadataReader.GgufHeader): LocalModel {
+        val size = file.length()
         return LocalModel(
             file = file,
             architecture = header.architecture,
@@ -70,8 +74,15 @@ class ModelRepository(private val context: Context) {
             contextLength = header.contextLength(),
             hasChatTemplate = !header.chatTemplate.isNullOrBlank(),
             profile = BuiltInProfiles.match(header.architecture, header.name, file.name),
+            official = if (OfficialFiles.isCandidateSize(size)) OfficialFiles.match(size, readChecksum(file)) else null,
         )
     }
+
+    /** Checksum sidecar "<model>.gguf.sha256", written at import for files of an official size. */
+    private fun checksumFile(model: File) = File(model.parentFile, model.name + CHECKSUM_SUFFIX)
+
+    private fun readChecksum(model: File): String? =
+        runCatching { checksumFile(model).takeIf { it.isFile }?.readText()?.trim()?.takeIf { it.length == 64 } }.getOrNull()
 
     /**
      * Copies a user-picked document into [modelsDir], reporting progress in 0..1 (or -1 when the
@@ -79,7 +90,8 @@ class ModelRepository(private val context: Context) {
      * projector picked here is recognised by its header and stored in [mmprojDir] instead.
      */
     suspend fun import(uri: Uri, onProgress: (Float) -> Unit): ImportResult = withContext(Dispatchers.IO) {
-        val (partial, displayName) = copyToPartial(uri, modelsDir, onProgress)
+        val copy = copyToPartial(uri, modelsDir, onProgress, hash = true)
+        val (partial, displayName) = copy
         try {
             // Validate the full header before exposing the file.
             val header = GgufMetadataReader.read(partial)
@@ -87,6 +99,12 @@ class ModelRepository(private val context: Context) {
                 ImportResult.Projector(moveIntoPlace(partial, uniqueTarget(mmprojDir, safeGgufName(displayName))))
             } else {
                 val target = moveIntoPlace(partial, uniqueTarget(modelsDir, safeGgufName(displayName)))
+                val sha = copy.sha256
+                checksumFile(target).delete() // a stale one left by a file of the same name
+                if (sha != null && OfficialFiles.isCandidateSize(target.length())) {
+                    runCatching { checksumFile(target).writeText(sha) }
+                        .onFailure { checksumFile(target).delete() }
+                }
                 ImportResult.Model(describe(target, header))
             }
         } catch (t: Throwable) {
@@ -100,7 +118,7 @@ class ModelRepository(private val context: Context) {
      * header is not a CLIP / mmproj file with a vision encoder.
      */
     suspend fun importMmproj(uri: Uri, onProgress: (Float) -> Unit): File = withContext(Dispatchers.IO) {
-        val (partial, displayName) = copyToPartial(uri, mmprojDir, onProgress)
+        val (partial, displayName) = copyToPartial(uri, mmprojDir, onProgress, hash = false)
         try {
             val header = GgufMetadataReader.read(partial)
             if (!header.isMmproj) {
@@ -122,8 +140,14 @@ class ModelRepository(private val context: Context) {
 
     fun deleteMmproj(name: String): Boolean = mmprojFile(name)?.delete() ?: false
 
-    /** Copies [uri] to "<dir>/<name>.part" after checking the GGUF magic; returns it with the display name. */
-    private suspend fun copyToPartial(uri: Uri, dir: File, onProgress: (Float) -> Unit): Pair<File, String> =
+    private data class Copied(val partial: File, val displayName: String, val sha256: String?)
+
+    /**
+     * Copies [uri] to "<dir>/<name>.part" after checking the GGUF magic; returns it with the display
+     * name. With [hash], the SHA-256 is computed while copying unless the size is known and matches
+     * no official file (OfficialFiles), so ordinary imports pay nothing extra.
+     */
+    private suspend fun copyToPartial(uri: Uri, dir: File, onProgress: (Float) -> Unit, hash: Boolean): Copied =
         withContext(Dispatchers.IO) {
             val resolver = context.contentResolver
             var displayName = "model.gguf"
@@ -152,6 +176,11 @@ class ModelRepository(private val context: Context) {
                     if (read < 4 || !GgufMetadataReader.hasMagic(head)) {
                         throw GgufMetadataReader.NotGgufException("“$displayName” is not a GGUF file")
                     }
+                    val digest = if (hash && (totalSize < 0 || OfficialFiles.isCandidateSize(totalSize))) {
+                        MessageDigest.getInstance("SHA-256").apply { update(head, 0, 4) }
+                    } else {
+                        null
+                    }
                     partial.outputStream().use { out ->
                         out.write(head, 0, 4)
                         var copied = 4L
@@ -162,6 +191,7 @@ class ModelRepository(private val context: Context) {
                             val n = ins.read(buf)
                             if (n < 0) break
                             out.write(buf, 0, n)
+                            digest?.update(buf, 0, n)
                             copied += n
                             if (copied - lastReport >= (8 shl 20)) {
                                 lastReport = copied
@@ -170,9 +200,9 @@ class ModelRepository(private val context: Context) {
                         }
                         out.fd.sync()
                     }
+                    onProgress(1f)
+                    Copied(partial, displayName, digest?.let { OfficialFiles.hex(it.digest()) })
                 }
-                onProgress(1f)
-                partial to displayName
             } catch (t: Throwable) {
                 partial.delete()
                 throw t
@@ -184,7 +214,14 @@ class ModelRepository(private val context: Context) {
         return target
     }
 
-    fun delete(model: LocalModel): Boolean = model.file.delete()
+    fun delete(model: LocalModel): Boolean {
+        checksumFile(model.file).delete()
+        return model.file.delete()
+    }
+
+    private companion object {
+        const val CHECKSUM_SUFFIX = ".sha256"
+    }
 
     private fun uniqueTarget(dir: File, name: String): File {
         var f = File(dir, name)
